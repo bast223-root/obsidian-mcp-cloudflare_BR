@@ -1,0 +1,34 @@
+// Template — copy to wrangler.jsonc via `npm run setup` after editing .env.
+// Do NOT commit wrangler.jsonc; it carries your account id, bucket name, and
+// KV namespace id.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "obsidian-mcp",
+  "account_id": "${CLOUDFLARE_ACCOUNT_ID}",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    { "pattern": "${MCP_HOSTNAME}", "custom_domain": true }
+  ],
+  "kv_namespaces": [
+    { "binding": "OAUTH_KV", "id": "${OAUTH_KV_ID}" }
+  ],
+  "r2_buckets": [
+    { "binding": "VAULT", "bucket_name": "${R2_BUCKET_NAME}" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "MCP_OBJECT", "class_name": "ObsidianMCP" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ObsidianMCP"] }
+  ],
+  "vars": {
+    "VAULT_PREFIX": "${VAULT_PREFIX}",
+    "DAILY_NOTE_PATH_TEMPLATE": "${DAILY_NOTE_PATH_TEMPLATE}",
+    "PERMALINK_BASE_URL": "${PERMALINK_BASE_URL}"
+  },
+  "observability": { "enabled": true }
+}

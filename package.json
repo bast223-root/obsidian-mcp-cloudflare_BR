@@ -1,0 +1,37 @@
+{
+  "name": "obsidian-mcp-cloudflare",
+  "version": "0.7.0",
+  "private": true,
+  "type": "module",
+  "author": "David Szpunar (https://david.szpunar.com)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dszp/obsidian-mcp-cloudflare.git"
+  },
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:fresh": "npm run setup && npx wrangler deploy",
+    "types": "wrangler types",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^0.5.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "agents": "^0.12.3",
+    "gray-matter": "^4.0.3",
+    "nanoid": "^5.1.11",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.16.3",
+    "@types/node": "^25.8.0",
+    "buffer": "^6.0.3",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6",
+    "wrangler": "^4.92.0"
+  }
+}
