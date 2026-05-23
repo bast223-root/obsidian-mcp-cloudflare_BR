@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- README now links to the [announcement blog post](https://dszp.dev/2026/05/23/two-workers-for-obsidian-and-claude-ai/) covering the motivation and design of both Workers.
+
 ## [0.8.0] - 2026-05-23
 
 First public release. Everything that was previously per-instance configuration is now `.env`-driven so anyone can deploy this without editing the codebase.

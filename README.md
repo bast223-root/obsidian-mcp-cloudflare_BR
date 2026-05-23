@@ -2,6 +2,8 @@
 
 A Cloudflare Worker that exposes an Obsidian vault as an OAuth-authenticated MCP server consumable by Claude.ai. The vault is stored in R2 via the Remotely Save plugin, which keeps your Obsidian desktop and iOS clients in sync. This Worker binds that same R2 bucket and serves MCP tools over an OAuth-protected endpoint.
 
+> Background: [Two Workers for Obsidian and Claude.ai](https://dszp.dev/2026/05/23/two-workers-for-obsidian-and-claude-ai/) — announcement post covering the motivation and design of this MCP Worker and the companion link resolver.
+
 ## Documentation map
 
 - **README.md** (this file) — architecture, tool reference, gotchas.
