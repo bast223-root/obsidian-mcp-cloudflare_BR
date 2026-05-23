@@ -21,8 +21,46 @@ Before answering operational questions, read the relevant file rather than guess
 
 ## Branching convention
 
-- `main` — deployable state. Should always pass `npm test` and `npx wrangler deploy --dry-run`. No unreviewed direct commits when the project has other contributors.
-- For larger or experimental changes, branch into `feat/<short-name>` and merge back.
+- `main` — deployable state. Should always pass `npm test` and `npx wrangler deploy --dry-run`. Tagged versions live here; only the release commit and merges from `dev` land directly on `main`.
+- `dev` — integration branch where ongoing work lands. Commit here freely. Routine small changes can go straight to `dev`; larger or risky work goes through a `feat/<short-name>` branch and a PR back into `dev`.
+- `feat/<short-name>` — short-lived branches for individual features or fixes. Open a PR into `dev`. Squash or rebase on merge is fine.
+- When `dev` is ready to ship: open a PR `dev` → `main`, get green CI, merge (fast-forward preferred), then [cut a release](#cutting-a-release).
+
+Do not push directly to `main` except for the merge-and-tag step at release time.
+
+## Cutting a release
+
+When `dev` is stable and you want to ship:
+
+1. **Update `CHANGELOG.md` on `dev`** — move every entry under `## [Unreleased]` into a new `## [X.Y.Z] - YYYY-MM-DD` section (today's date). Leave `## [Unreleased]` in place but empty. Add a new compare-URL entry at the bottom: `[X.Y.Z]: https://github.com/.../compare/v<prev>...vX.Y.Z` and update the `[Unreleased]` link to compare against `vX.Y.Z`.
+2. **Bump `package.json` `version`** to match `X.Y.Z`.
+3. **Commit on `dev`**: `Release vX.Y.Z` (or include the version in a fuller subject).
+4. **Open a PR `dev` → `main`.** CI should be green; if you self-merge, fast-forward to keep history linear.
+5. **Tag from `main`**:
+   ```bash
+   git checkout main && git pull
+   git tag -a vX.Y.Z -m "Release vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+6. **Deploy** the tagged commit:
+   ```bash
+   npx wrangler whoami    # verify
+   npx wrangler deploy
+   ```
+   Record the Cloudflare Version ID for the rollback runbook.
+7. **Publish a GitHub release** off the tag, using the CHANGELOG section for that version as the body:
+   ```bash
+   gh release create vX.Y.Z --title "vX.Y.Z" --notes-file <(sed -n "/## \[X.Y.Z\]/,/## \[/p" CHANGELOG.md | sed '$d')
+   ```
+   Or use the GitHub UI: Releases → Draft new release → pick the tag → paste the section.
+8. **Switch back to `dev`** and continue working. `dev` is now one commit ahead of `main` (the release commit you just merged) — or zero if you fast-forwarded; either way, future work picks up from here.
+
+Versioning follows SemVer:
+- **patch (`0.X.Y`)** — bug fixes that don't change tool shapes or env vars.
+- **minor (`0.X.0`)** — new tools, new env vars with safe defaults, additive response-shape changes.
+- **major (`X.0.0`)** — breaking changes to tool names, removed tools, response-shape breaks that aren't backward-compatible.
+
+Until `1.0.0`, treat minor bumps as the "could break someone if they were depending on a specific tool" boundary, not patch.
 
 ## Common commands
 

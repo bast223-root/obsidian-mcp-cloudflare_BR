@@ -7,16 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-23
+
+First public release. Everything that was previously per-instance configuration is now `.env`-driven so anyone can deploy this without editing the codebase.
+
 ### Added
 
 - `${PLACEHOLDER}`-driven configuration. `wrangler.example.jsonc` + `.env.example` are the committed templates; `wrangler.jsonc` and `.env` are generated locally by `npm run setup` and gitignored. Lets the same codebase deploy to anyone's Cloudflare account.
 - `scripts/setup.mjs` — zero-dependency Node script that reads `.env`, idempotently creates the R2 bucket and `OAUTH_KV` KV namespace, captures the KV id back into `.env`, and substitutes placeholders into `wrangler.jsonc`. All wrangler shell-outs go through `execFileSync` (no shell interpolation) so values from `.env` can't become command injection.
 - `npm run setup` and `npm run deploy:fresh` package scripts.
 - `DEPLOYMENT.md` rewritten to combine first-time third-party setup with ongoing operations in a single doc.
+- `LICENSE` (MIT) and author attribution in `package.json` and `README.md`.
 
 ### Changed
 
 - README sanitized for public consumption — no per-instance hostnames, account ids, bucket names, or KV ids baked into prose. Architecture diagrams and tool descriptions use placeholders instead.
+- CLAUDE.md sanitized similarly; kept the architectural context and gotchas, dropped per-installation specifics and personal git-signing notes.
 
 ### Removed
 
@@ -173,7 +179,8 @@ Initial release.
 - End-to-end deployment verified: Obsidian (Mac) ↔ Remotely Save ↔ R2 ↔ Worker ↔ Claude.ai. Note creation through Claude.ai was confirmed and the new note synced back to Obsidian on the next Remotely Save interval.
 - Documented gotchas encountered during build: `vitest-pool-workers` + space-in-path, `custom_domain` clashes with pre-existing DNS records, 30-minute negative DNS cache after record deletion.
 
-[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.5.0...v0.6.0
