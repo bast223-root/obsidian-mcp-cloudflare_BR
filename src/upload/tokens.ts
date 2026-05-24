@@ -1,6 +1,6 @@
 import { type ToolResult, err, ok } from "../types";
 import { buildVaultConfig } from "../config";
-import { resolveAttachmentPath } from "../vault/attachments";
+import { dirOf, resolveAttachmentPath } from "../vault/attachments";
 
 // Short-lived, single-use upload tokens for Claude-minted upload links.
 //
@@ -144,6 +144,10 @@ export interface UploadLink {
   expires_at: string;
   /** Set for a deterministic single-file link — the exact path the file lands at. */
   dest_path?: string;
+  /** The vault folder uploads land in (so a batch upload can be found with
+   * list_attachments scoped to this prefix instead of scanning the whole vault).
+   * "" means the vault root. */
+  landing_dir: string;
   target_note?: string;
   subfolder?: string;
   /** Whether the link accepts multiple files (batch mode). */
@@ -176,9 +180,9 @@ export async function createUploadLink(
     return err("upload_disabled", { detail: "SERVICE_BASE_URL is not a valid absolute URL" });
   }
 
+  const cfg = buildVaultConfig(env);
   const scope: UploadTokenScope = { target_note: args.target_note, subfolder: args.subfolder };
   if (args.filename) {
-    const cfg = buildVaultConfig(env);
     const resolved = resolveAttachmentPath(cfg, {
       target_note: args.target_note,
       subfolder: args.subfolder,
@@ -190,6 +194,20 @@ export async function createUploadLink(
     scope.max_files = Math.min(Math.max(args.max_files ?? 10, 1), 50);
   }
 
+  // The folder uploads land in — same for every file, so it's known up front
+  // even in batch mode. Lets the caller scope its follow-up list_attachments.
+  let landing_dir = "";
+  if (scope.dest_path) {
+    landing_dir = dirOf(scope.dest_path);
+  } else {
+    const probe = resolveAttachmentPath(cfg, {
+      target_note: args.target_note,
+      subfolder: args.subfolder,
+      filename: "probe.bin",
+    });
+    if (probe.ok) landing_dir = dirOf(probe.value);
+  }
+
   const ttlSeconds = args.ttl_minutes ? args.ttl_minutes * 60 : undefined;
   const { token, expiresAt } = await signUploadToken(env, scope, ttlSeconds);
   const multiple = !scope.dest_path;
@@ -198,6 +216,7 @@ export async function createUploadLink(
     upload_url: url,
     expires_at: expiresAt,
     dest_path: scope.dest_path,
+    landing_dir,
     target_note: args.target_note,
     subfolder: args.subfolder,
     multiple,

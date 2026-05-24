@@ -68,14 +68,26 @@ describe("upload tokens", () => {
 });
 
 describe("createUploadLink", () => {
-  it("returns a tappable URL with a verifiable token", async () => {
+  it("returns a tappable URL with a verifiable token and landing_dir", async () => {
     const r = await createUploadLink(env, { target_note: "Projects/Plan.md" });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.value.upload_url).toMatch(/^https:\/\/vault\.example\.test\/upload\?t=/);
+    expect(r.value.upload_url).toMatch(/^https:\/\/vault\.example\.test\/upload\?t=.*&multi=1$/);
+    expect(r.value.multiple).toBe(true);
+    expect(r.value.landing_dir).toBe("Projects/files"); // per_note_subfolder default
     const token = new URL(r.value.upload_url).searchParams.get("t")!;
     const v = await verifyUploadToken(env, token);
     expect(v.ok && v.value.target_note).toBe("Projects/Plan.md");
+  });
+
+  it("deterministic link returns dest_path and its landing_dir", async () => {
+    const r = await createUploadLink(env, { target_note: "Projects/Plan.md", filename: "diagram.png" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.dest_path).toBe("Projects/files/diagram.png");
+    expect(r.value.landing_dir).toBe("Projects/files");
+    expect(r.value.multiple).toBe(false);
+    expect(r.value.upload_url).not.toContain("multi=1");
   });
 
   it("degrades to upload_disabled without SERVICE_BASE_URL", async () => {
