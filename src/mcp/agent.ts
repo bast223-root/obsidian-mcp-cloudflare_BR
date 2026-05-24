@@ -109,7 +109,7 @@ function fromToolResultMixedBlocks<T>(
 }
 
 export class ObsidianMCP extends McpAgent<Env, never, Props> {
-  server = new McpServer({ name: "obsidian-vault", version: "0.7.0" });
+  server = new McpServer({ name: "obsidian-vault", version: "0.8.0" });
   private _index?: VaultIndex;
 
   private get vault(): R2Client {
