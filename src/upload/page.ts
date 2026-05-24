@@ -50,7 +50,7 @@ export function renderUploadPage(opts: UploadPageOptions = {}): string {
 <title>Upload link unavailable</title>${STYLE}</head>
 <body>
 <h1>Upload to vault</h1>
-<div class="banner err">This upload link is no longer usable (${escapeHtml(opts.linkError)}). Upload links expire and work only once — ask Claude for a fresh link.</div>
+<div class="banner err">This upload link is no longer usable (${escapeHtml(opts.linkError)}). Upload links expire and work only once — ask for a fresh link.</div>
 </body></html>`;
   }
 
