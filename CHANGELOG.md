@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-23
+
 ### Added — direct upload endpoint (large files / mobile photos)
 
 - Authenticated HTTP upload path so users can get real photos into the vault, which MCP tool calls can't carry (tool-call payloads are capped by the client, and a user-uploaded image only reaches the model as vision, not reproducible bytes):
@@ -211,7 +213,8 @@ Initial release.
 - End-to-end deployment verified: Obsidian (Mac) ↔ Remotely Save ↔ R2 ↔ Worker ↔ Claude.ai. Note creation through Claude.ai was confirmed and the new note synced back to Obsidian on the next Remotely Save interval.
 - Documented gotchas encountered during build: `vitest-pool-workers` + space-in-path, `custom_domain` clashes with pre-existing DNS records, 30-minute negative DNS cache after record deletion.
 
-[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.6.0...v0.6.1
