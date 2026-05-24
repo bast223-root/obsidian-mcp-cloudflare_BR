@@ -937,13 +937,15 @@ describe("attachment tools", () => {
 
   it("moveAttachment relocates bytes server-side", async () => {
     const c = new R2Client(env.VAULT, cfg);
+    const { index } = newIndex(c);
     await seed(c, "Inbox/a.png", PNG_BYTES, "image/png");
-    const r = await moveAttachment(c, cfg, { from_path: "Inbox/a.png", to_path: "Projects/files/a.png" });
+    const r = await moveAttachment(c, cfg, index, { from_path: "Inbox/a.png", to_path: "Projects/files/a.png" });
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.to).toBe("Projects/files/a.png");
       expect(r.value.embed_markdown).toBe("![[Projects/files/a.png]]");
       expect(r.value.content_type).toBe("image/png");
+      expect(r.value.notes_modified).toEqual([]); // not embedded anywhere
     }
     expect(await c.getBinary("Inbox/a.png")).toBeNull();
     expect(await c.getBinary("Projects/files/a.png")).not.toBeNull();
@@ -951,27 +953,66 @@ describe("attachment tools", () => {
 
   it("moveAttachment won't clobber without overwrite, and reports same_path/not_found", async () => {
     const c = new R2Client(env.VAULT, cfg);
+    const { index } = newIndex(c);
     await seed(c, "files/a.png", PNG_BYTES, "image/png");
     await seed(c, "files/b.png", PNG_BYTES, "image/png");
 
-    const clobber = await moveAttachment(c, cfg, { from_path: "files/a.png", to_path: "files/b.png" });
+    const clobber = await moveAttachment(c, cfg, index, { from_path: "files/a.png", to_path: "files/b.png" });
     expect(clobber.ok).toBe(false);
     if (!clobber.ok) expect(clobber.reason).toBe("exists");
 
-    const overwrite = await moveAttachment(c, cfg, { from_path: "files/a.png", to_path: "files/b.png", overwrite: true });
+    const overwrite = await moveAttachment(c, cfg, index, { from_path: "files/a.png", to_path: "files/b.png", overwrite: true });
     expect(overwrite.ok).toBe(true);
 
-    expect((await moveAttachment(c, cfg, { from_path: "x.png", to_path: "x.png" })).ok).toBe(false);
-    const missing = await moveAttachment(c, cfg, { from_path: "files/none.png", to_path: "files/c.png" });
+    expect((await moveAttachment(c, cfg, index, { from_path: "x.png", to_path: "x.png" })).ok).toBe(false);
+    const missing = await moveAttachment(c, cfg, index, { from_path: "files/none.png", to_path: "files/c.png" });
     expect(missing.ok).toBe(false);
     if (!missing.ok) expect(missing.reason).toBe("not_found");
   });
 
   it("moveAttachment refuses to move a non-allowlisted path (e.g. a note)", async () => {
     const c = new R2Client(env.VAULT, cfg);
-    const r = await moveAttachment(c, cfg, { from_path: "Note.md", to_path: "Other.md" });
+    const { index } = newIndex(c);
+    const r = await moveAttachment(c, cfg, index, { from_path: "Note.md", to_path: "Other.md" });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("disallowed_extension");
+  });
+
+  it("moveAttachment rewrites embeds in every referring note", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, "files/img.png", PNG_BYTES, "image/png");
+    const seedNote = async (path: string, body: string) => {
+      const etag = await c.put(path, body);
+      store.upsert({ path, etag, body, tags: [], wikilinks: extractWikilinks(body) });
+    };
+    await seedNote("A.md", "see ![[files/img.png]] here");
+    await seedNote("Sub/B.md", "ref ![[files/img.png]]");
+
+    const r = await moveAttachment(c, cfg, index, { from_path: "files/img.png", to_path: "Archive/img.png" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.notes_modified.map((n) => n.path).sort()).toEqual(["A.md", "Sub/B.md"]);
+    }
+    expect(await c.get("A.md")).toBe("see ![[Archive/img.png]] here");
+    expect(await c.get("Sub/B.md")).toBe("ref ![[Archive/img.png]]");
+  });
+
+  it("moveAttachment with update_embeds=false leaves notes untouched", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, "files/img.png", PNG_BYTES, "image/png");
+    const body = "see ![[files/img.png]]";
+    const etag = await c.put("A.md", body);
+    store.upsert({ path: "A.md", etag, body, tags: [], wikilinks: extractWikilinks(body) });
+
+    const r = await moveAttachment(c, cfg, index, {
+      from_path: "files/img.png",
+      to_path: "Archive/img.png",
+      update_embeds: false,
+    });
+    expect(r.ok && r.value.notes_modified).toEqual([]);
+    expect(await c.get("A.md")).toBe(body);
   });
 
   it("deleteAttachment is idempotent and refuses non-allowlisted paths", async () => {

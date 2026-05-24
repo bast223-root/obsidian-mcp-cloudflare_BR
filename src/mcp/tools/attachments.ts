@@ -1,6 +1,7 @@
 import { ObjectExistsError, type R2Client } from "../../vault/r2-client";
 import { type ToolResult, type VaultConfig, err, ok } from "../../types";
-import { buildPermalink } from "../../vault/markdown";
+import type { VaultIndex } from "../../vault/index-store";
+import { buildPermalink, rewriteEmbedTargetForMove } from "../../vault/markdown";
 import {
   DEFAULT_ATTACHMENT_EXTENSIONS,
   assertAllowedExtension,
@@ -9,6 +10,7 @@ import {
   isImageMime,
   mimeToExtension,
   parseExtensionAllowlist,
+  relativeForEmbed,
   resolveAttachmentPath,
   validateAttachmentSourceUrl,
 } from "../../vault/attachments";
@@ -249,21 +251,25 @@ export interface MoveAttachmentResult {
   etag: string;
   size: number;
   content_type: string;
+  /** Notes whose embeds were rewritten to the new path. */
+  notes_modified: { path: string; etag: string; content: string }[];
 }
 
 /**
  * Move or rename an attachment entirely server-side (R2 copy-then-delete) — the
  * way to relocate a large file without round-tripping its bytes through a tool
  * call. Both paths must be allowlisted (so a note can't be moved via this tool).
- * Non-clobber unless `overwrite`. NOTE: this does NOT rewrite embeds in notes —
- * use it before embedding the attachment, or re-embed afterward with the
- * returned `embed_markdown`. Fails with reason='same_path', 'not_found',
- * 'exists', or 'disallowed_extension'.
+ * Non-clobber unless `overwrite`. By default it also rewrites embeds in notes
+ * that referenced the old path (relative or vault-rooted form → the new path's
+ * note-relative form), using the wikilink index — pass `update_embeds: false` to
+ * move bytes only. Fails with reason='same_path', 'not_found', 'exists', or
+ * 'disallowed_extension'.
  */
 export async function moveAttachment(
   c: R2Client,
   cfg: VaultConfig,
-  args: { from_path: string; to_path: string; overwrite?: boolean },
+  index: VaultIndex,
+  args: { from_path: string; to_path: string; overwrite?: boolean; update_embeds?: boolean },
 ): Promise<ToolResult<MoveAttachmentResult>> {
   if (args.from_path === args.to_path) return err("same_path", { path: args.from_path });
   const allow = allowlistFor(cfg);
@@ -274,21 +280,51 @@ export async function moveAttachment(
 
   const obj = await c.getBinary(args.from_path);
   if (!obj) return err("not_found", { path: args.from_path });
+
+  let etag: string;
+  let size: number;
   try {
-    const { etag, size } = await c.putBinary(args.to_path, obj.body, obj.contentType, {
+    const put = await c.putBinary(args.to_path, obj.body, obj.contentType, {
       onlyIfNotExists: !args.overwrite,
     });
+    etag = put.etag;
+    size = put.size;
     await c.delete(args.from_path);
-    return ok({
-      from: args.from_path,
-      to: args.to_path,
-      embed_markdown: buildEmbedMarkdown(args.to_path, null, "wikilink"),
-      etag,
-      size,
-      content_type: obj.contentType,
-    });
   } catch (e) {
     if (e instanceof ObjectExistsError) return err("exists", { path: args.to_path });
     throw e;
   }
+
+  // Rewrite embeds in any note that referenced the old path so the link follows
+  // the file. Bytes are already moved; an unrewritten note simply keeps pointing
+  // at the now-missing path (best-effort, same as move_note).
+  const notes_modified: { path: string; etag: string; content: string }[] = [];
+  if (args.update_embeds !== false) {
+    const referrers = await index.findReferrersFor(args.from_path);
+    for (const notePath of referrers) {
+      const body = await c.get(notePath);
+      if (body === null) continue;
+      const newRel = relativeForEmbed(args.to_path, notePath);
+      // Rewrite both the note-relative and vault-rooted forms of the old target.
+      let updated = body;
+      for (const oldForm of new Set([relativeForEmbed(args.from_path, notePath), args.from_path])) {
+        if (oldForm === newRel) continue;
+        updated = rewriteEmbedTargetForMove(updated, oldForm, newRel).content;
+      }
+      if (updated !== body) {
+        const noteEtag = await c.put(notePath, updated);
+        notes_modified.push({ path: notePath, etag: noteEtag, content: updated });
+      }
+    }
+  }
+
+  return ok({
+    from: args.from_path,
+    to: args.to_path,
+    embed_markdown: buildEmbedMarkdown(args.to_path, null, "wikilink"),
+    etag,
+    size,
+    content_type: obj.contentType,
+    notes_modified,
+  });
 }

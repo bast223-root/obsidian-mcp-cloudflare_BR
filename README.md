@@ -67,7 +67,7 @@ Obsidian (Mac / iOS / iPad)
 | `head_attachment(path)` | Metadata only — JSON `{path, size, content_type, etag, uploaded}`. Use to check `size` before a `read_attachment`. Failure: `not_found` |
 | `list_attachments(prefix?, limit?, cursor?)` | List non-`.md` objects. Returns JSON `{items, cursor}`; `cursor` paginates. Empty `prefix` lists the whole vault |
 | `delete_attachment(path)` | Delete an attachment. Idempotent. Only allowlisted extensions (so a note can't be deleted via this tool). Failure: `disallowed_extension` |
-| `move_attachment(from_path, to_path, overwrite?)` | Move/rename an attachment server-side (R2 copy+delete — works for large files). Both paths allowlisted. Does **not** rewrite embeds in notes; move before embedding or re-embed with the returned `embed_markdown`. Returns JSON `{from, to, embed_markdown, etag, size, content_type}`. Failures: `same_path`, `not_found`, `exists`, `disallowed_extension` |
+| `move_attachment(from_path, to_path, overwrite?, update_embeds?)` | Move/rename an attachment server-side (R2 copy+delete — works for large files). Both paths allowlisted. By default rewrites the embed in **every** note that referenced the old path (links follow the file across one or many notes); `update_embeds: false` moves bytes only. Returns JSON `{from, to, embed_markdown, etag, size, content_type, notes_modified}`. Failures: `same_path`, `not_found`, `exists`, `disallowed_extension` |
 | `create_upload_link(target_note?, subfolder?, filename?, max_files?, ttl_minutes?)` | Mint a short-lived, single-use web link the **user taps** to upload file(s) straight to the vault (bypassing the tool-call payload limit) — the way to handle real photos/large images, especially from mobile. With `filename`: deterministic single-file link (returns the exact `dest_path` to poll). Without: batch link for up to `max_files`. Returns JSON `{upload_url, expires_at, landing_dir, multiple, …}` — `landing_dir` is the folder uploads land in, so a batch upload is found via `list_attachments` scoped to it (no whole-vault scan); `dest_path` only in deterministic mode. Failure: `upload_disabled` |
 
 Tool failures use the MCP `isError: true` convention with a JSON-encoded body of the shape `{ ok: false, reason, ...context }`. Failures are not thrown as JSON-RPC errors, so they do not count as Durable Object RPC errors at the Cloudflare layer.
@@ -220,7 +220,7 @@ There is intentionally **no inline-base64 upload tool**. A tool call carries its
 
 All three POST to the same `POST /upload` endpoint. **You don't upload twice:** once the file is in the vault, Claude reads it back for OCR/text extraction with `read_attachment` (which returns the image to Claude's vision — a tool *result*, not subject to the output-token budget that makes inline upload impossible). So the loop is: tap the link and upload → tell Claude "done" (or it polls the known path) → Claude reads the image, extracts text, writes the note, embeds the path. Bytes go user→Worker; vision/authoring stays Claude→MCP.
 
-If Claude didn't know the destination note at upload time, it can upload to a guess/holding folder and relocate later with `move_attachment` (server-side, no re-upload) before embedding.
+If Claude didn't know the destination note at upload time, it can upload to a guess/holding folder and relocate later with `move_attachment` (server-side, no re-upload) — which also rewrites the embed in every note that already referenced the file, so reordering after the fact is safe.
 
 ### Setup
 

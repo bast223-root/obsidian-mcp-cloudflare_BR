@@ -435,12 +435,33 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
 
     this.server.tool(
       "move_attachment",
-      "Move or rename an attachment within the vault, entirely server-side (no bytes pass through this call, so it works for large files). Use it to relocate a file you uploaded to a guess/holding location once you know the right note or name. Both paths must be allowlisted extensions (so a note can't be moved via this tool). Returns JSON `{from, to, embed_markdown, etag, size, content_type}`. IMPORTANT: this does not rewrite embeds already placed in notes — move BEFORE embedding, or re-embed afterward using the returned `embed_markdown`. Fails with reason='same_path', 'not_found', 'exists' (set overwrite=true to replace), or 'disallowed_extension'.",
-      { from_path: AttachmentPath, to_path: AttachmentPath, overwrite: z.boolean().optional() },
+      "Move or rename an attachment within the vault, entirely server-side (no bytes pass through this call, so it works for large files). Use it to relocate a file you uploaded to a guess/holding location once you know the right note or name. Both paths must be allowlisted extensions (so a note can't be moved via this tool). By default it also rewrites the embed in EVERY note that referenced the old path (so links follow the file across one or many notes); pass update_embeds=false to move bytes only. Returns JSON `{from, to, embed_markdown, etag, size, content_type, notes_modified}` where notes_modified lists the rewritten note paths. Fails with reason='same_path', 'not_found', 'exists' (set overwrite=true to replace), or 'disallowed_extension'.",
+      {
+        from_path: AttachmentPath,
+        to_path: AttachmentPath,
+        overwrite: z.boolean().optional(),
+        update_embeds: z.boolean().optional(),
+      },
       async (args) =>
-        instrument("move_attachment", async () =>
-          fromToolResult(await moveAttachment(this.vault, this.cfg, args), (v) => JSON.stringify(v)),
-        ),
+        instrument("move_attachment", async () => {
+          const r = await moveAttachment(this.vault, this.cfg, this.index, args);
+          if (r.ok) {
+            for (const n of r.value.notes_modified) {
+              this.index.upsertFromContent(n.path, n.content, n.etag);
+            }
+          }
+          return fromToolResult(r, (v) =>
+            JSON.stringify({
+              from: v.from,
+              to: v.to,
+              embed_markdown: v.embed_markdown,
+              etag: v.etag,
+              size: v.size,
+              content_type: v.content_type,
+              notes_modified: v.notes_modified.map((n) => n.path),
+            }),
+          );
+        }),
     );
 
     this.server.tool(
