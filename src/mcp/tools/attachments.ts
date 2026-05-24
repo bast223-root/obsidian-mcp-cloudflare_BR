@@ -1,7 +1,7 @@
 import { ObjectExistsError, type R2Client } from "../../vault/r2-client";
 import { type ToolResult, type VaultConfig, err, ok } from "../../types";
 import type { VaultIndex } from "../../vault/index-store";
-import { buildPermalink, rewriteEmbedTargetForMove } from "../../vault/markdown";
+import { buildPermalink, extractWikilinks, rewriteEmbedTargetForMove } from "../../vault/markdown";
 import {
   DEFAULT_ATTACHMENT_EXTENSIONS,
   assertAllowedExtension,
@@ -253,6 +253,14 @@ export interface MoveAttachmentResult {
   content_type: string;
   /** Notes whose embeds were rewritten to the new path. */
   notes_modified: { path: string; etag: string; content: string }[];
+  /**
+   * Notes that reference the moved file by bare filename (`![[name.ext]]`) and
+   * were deliberately left untouched: Obsidian resolves bare-filename links by
+   * name regardless of folder, so the link still works after the move.
+   * Reported (rather than silently skipped) so callers get a complete picture
+   * of what referenced the file.
+   */
+  referrers_unchanged: string[];
 }
 
 /**
@@ -299,7 +307,11 @@ export async function moveAttachment(
   // the file. Bytes are already moved; an unrewritten note simply keeps pointing
   // at the now-missing path (best-effort, same as move_note).
   const notes_modified: { path: string; etag: string; content: string }[] = [];
+  const referrers_unchanged: string[] = [];
   if (args.update_embeds !== false) {
+    const fromSlash = args.from_path.lastIndexOf("/");
+    const fromBasename =
+      fromSlash === -1 ? args.from_path : args.from_path.slice(fromSlash + 1);
     const referrers = await index.findReferrersFor(args.from_path);
     for (const notePath of referrers) {
       const body = await c.get(notePath);
@@ -308,12 +320,26 @@ export async function moveAttachment(
       // Rewrite both the note-relative and vault-rooted forms of the old target.
       let updated = body;
       for (const oldForm of new Set([relativeForEmbed(args.from_path, notePath), args.from_path])) {
-        if (oldForm === newRel) continue;
-        updated = rewriteEmbedTargetForMove(updated, oldForm, newRel).content;
+        // Prefer the note-relative (shortened) form for the new target. But when
+        // the file moves *into* a subtree of this note's own folder, the
+        // shortened form collapses back onto the old embed text — rewriting to
+        // it would be a silent no-op that leaves the link pointing at the now-
+        // empty source. Fall back to the full vault path so the link still
+        // follows the file (the asymmetry behind the move-there/move-back bug).
+        const newForm = oldForm === newRel ? args.to_path : newRel;
+        if (oldForm === newForm) continue;
+        updated = rewriteEmbedTargetForMove(updated, oldForm, newForm).content;
       }
       if (updated !== body) {
         const noteEtag = await c.put(notePath, updated);
         notes_modified.push({ path: notePath, etag: noteEtag, content: updated });
+      } else if (extractWikilinks(body).includes(fromBasename)) {
+        // Found as a referrer but unchanged: it links the file by bare filename
+        // (`![[name.ext]]`), which the rewrite set deliberately doesn't touch
+        // (Obsidian resolves it by name, so it self-heals). The bare-basename
+        // check also excludes referrer-query false positives like
+        // `![[Other/name.ext]]`, which point at a different file entirely.
+        referrers_unchanged.push(notePath);
       }
     }
   }
@@ -326,5 +352,6 @@ export async function moveAttachment(
     size,
     content_type: obj.contentType,
     notes_modified,
+    referrers_unchanged,
   });
 }

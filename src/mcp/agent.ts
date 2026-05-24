@@ -84,7 +84,7 @@ function fromToolResultMixedBlocks<T>(
 }
 
 export class ObsidianMCP extends McpAgent<Env, never, Props> {
-  server = new McpServer({ name: "obsidian-vault", version: "0.9.0" });
+  server = new McpServer({ name: "obsidian-vault", version: "0.10.0" });
   private _index?: VaultIndex;
 
   private get vault(): R2Client {
@@ -435,7 +435,7 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
 
     this.server.tool(
       "move_attachment",
-      "Move or rename an attachment within the vault, entirely server-side (no bytes pass through this call, so it works for large files). Use it to relocate a file you uploaded to a guess/holding location once you know the right note or name. Both paths must be allowlisted extensions (so a note can't be moved via this tool). By default it also rewrites the embed in EVERY note that referenced the old path (so links follow the file across one or many notes); pass update_embeds=false to move bytes only. Returns JSON `{from, to, embed_markdown, etag, size, content_type, notes_modified}` where notes_modified lists the rewritten note paths. Fails with reason='same_path', 'not_found', 'exists' (set overwrite=true to replace), or 'disallowed_extension'.",
+      "Move or rename an attachment within the vault, entirely server-side (no bytes pass through this call, so it works for large files). Use it to relocate a file you uploaded to a guess/holding location once you know the right note or name. Both paths must be allowlisted extensions (so a note can't be moved via this tool). By default it also rewrites the embed in EVERY note that referenced the old path (so links follow the file across one or many notes); pass update_embeds=false to move bytes only. Returns JSON `{from, to, embed_markdown, etag, size, content_type, notes_modified, referrers_unchanged}` where notes_modified lists the note paths whose embeds were rewritten, and referrers_unchanged lists notes that reference the file by bare filename (`![[name.ext]]`) and were left as-is because Obsidian resolves those by name regardless of folder (the link still works). Fails with reason='same_path', 'not_found', 'exists' (set overwrite=true to replace), or 'disallowed_extension'.",
       {
         from_path: AttachmentPath,
         to_path: AttachmentPath,
@@ -459,6 +459,7 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
               size: v.size,
               content_type: v.content_type,
               notes_modified: v.notes_modified.map((n) => n.path),
+              referrers_unchanged: v.referrers_unchanged,
             }),
           );
         }),

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-24
+
+### Fixed
+
+- `move_attachment` no longer silently skips the embed rewrite when a file is moved *into* a subtree of the referring note's own folder. The new target was being shortened (via `relativeForEmbed`) onto the existing embed text, so the `oldForm === newRel` no-op guard fired and the note was left pointing at the now-empty source path (e.g. moving `files/x.jpeg` → `Knowledge/Humor/files/x.jpeg` for a note in `Knowledge/Humor/`). On that collision the rewrite now falls back to the full vault path. This was the asymmetry behind "move there, move back" only updating the link the first time.
+
+### Added
+
+- `move_attachment` response now includes `referrers_unchanged: string[]` — notes that reference the moved file by bare filename (`![[name.ext]]`) and were intentionally left untouched (Obsidian resolves bare-filename links by name regardless of folder, so they self-heal on move). Previously these referrers were found but neither rewritten nor reported, so `notes_modified` undercounted what pointed at the file. Same-basename embeds that actually point at a *different* file (e.g. `![[Other/name.ext]]`) are correctly excluded.
+
 ## [0.9.0] - 2026-05-23
 
 ### Added — direct upload endpoint (large files / mobile photos)
@@ -213,7 +223,8 @@ Initial release.
 - End-to-end deployment verified: Obsidian (Mac) ↔ Remotely Save ↔ R2 ↔ Worker ↔ Claude.ai. Note creation through Claude.ai was confirmed and the new note synced back to Obsidian on the next Remotely Save interval.
 - Documented gotchas encountered during build: `vitest-pool-workers` + space-in-path, `custom_domain` clashes with pre-existing DNS records, 30-minute negative DNS cache after record deletion.
 
-[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.6.1...v0.7.0

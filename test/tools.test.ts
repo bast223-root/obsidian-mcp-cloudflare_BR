@@ -998,6 +998,81 @@ describe("attachment tools", () => {
     expect(await c.get("Sub/B.md")).toBe("ref ![[Archive/img.png]]");
   });
 
+  it("moveAttachment rewrites the embed when the file moves under the referring note's folder", async () => {
+    // Regression: moving a file INTO a subtree of the referring note's own
+    // folder used to no-op the rewrite. `relativeForEmbed(to_path, note)`
+    // strips the note's folder prefix, collapsing the new target onto the
+    // existing embed string, so the `oldForm === newRel` guard skipped it and
+    // the note was left pointing at the old (now-empty) location.
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, "files/img.png", PNG_BYTES, "image/png");
+    const body = "see ![[files/img.png]] here";
+    const etag = await c.put("Knowledge/Humor/N.md", body);
+    store.upsert({
+      path: "Knowledge/Humor/N.md",
+      etag,
+      body,
+      tags: [],
+      wikilinks: extractWikilinks(body),
+    });
+
+    const r = await moveAttachment(c, cfg, index, {
+      from_path: "files/img.png",
+      to_path: "Knowledge/Humor/files/img.png",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.notes_modified.map((n) => n.path)).toEqual(["Knowledge/Humor/N.md"]);
+    }
+    // The embed must point unambiguously at the new location, not the old root path.
+    expect(await c.get("Knowledge/Humor/N.md")).toBe(
+      "see ![[Knowledge/Humor/files/img.png]] here",
+    );
+  });
+
+  it("moveAttachment reports bare-filename referrers without rewriting them", async () => {
+    // A `![[img.png]]` embed (no folder) is resolved by Obsidian by name
+    // regardless of where the file lives, so it self-heals on move and is left
+    // untouched. But it genuinely references the file, so it must be reported in
+    // `referrers_unchanged` rather than silently dropped — a complete audit of
+    // what pointed at the moved file.
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, "files/img.png", PNG_BYTES, "image/png");
+    const body = "see ![[img.png]] here";
+    const etag = await c.put("Projects/Plan.md", body);
+    store.upsert({ path: "Projects/Plan.md", etag, body, tags: [], wikilinks: extractWikilinks(body) });
+
+    const r = await moveAttachment(c, cfg, index, { from_path: "files/img.png", to_path: "Archive/img.png" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.notes_modified).toEqual([]);
+      expect(r.value.referrers_unchanged).toEqual(["Projects/Plan.md"]);
+    }
+    expect(await c.get("Projects/Plan.md")).toBe(body); // byte-identical, not rewritten
+  });
+
+  it("moveAttachment does not report a same-basename embed that points at a different file", async () => {
+    // `![[Other/img.png]]` references a *different* file. The referrer query's
+    // `LIKE '%/img.png'` clause flags it as a candidate, but it neither gets
+    // rewritten nor reported — it does not reference the moved file.
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seed(c, "files/img.png", PNG_BYTES, "image/png");
+    const body = "ref ![[Other/img.png]]";
+    const etag = await c.put("Note.md", body);
+    store.upsert({ path: "Note.md", etag, body, tags: [], wikilinks: extractWikilinks(body) });
+
+    const r = await moveAttachment(c, cfg, index, { from_path: "files/img.png", to_path: "Archive/img.png" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.notes_modified).toEqual([]);
+      expect(r.value.referrers_unchanged).toEqual([]);
+    }
+    expect(await c.get("Note.md")).toBe(body);
+  });
+
   it("moveAttachment with update_embeds=false leaves notes untouched", async () => {
     const c = new R2Client(env.VAULT, cfg);
     const { store, index } = newIndex(c);
