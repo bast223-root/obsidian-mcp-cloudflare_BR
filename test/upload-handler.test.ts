@@ -39,7 +39,33 @@ describe("handleUpload", () => {
     expect(r).not.toBeNull();
     expect(r!.status).toBe(200);
     expect(r!.headers.get("content-type")).toContain("text/html");
-    expect(await r!.text()).toContain("Upload to vault");
+    const body = await r!.text();
+    expect(body).toContain("Upload to vault");
+    // No signed link → editable folder fields are shown.
+    expect(body).toContain('id="target_note"');
+  });
+
+  it("GET with a deterministic link shows the exact destination and hides folder fields", async () => {
+    const { token } = await signUploadToken(env, { dest_path: "Projects/files/diagram.png" });
+    const r = await handleUpload(new Request("https://x/upload?t=" + encodeURIComponent(token)), env);
+    const body = await r!.text();
+    expect(body).toContain("Uploading to");
+    expect(body).toContain("Projects/files/diagram.png");
+    expect(body).not.toContain('id="target_note"'); // link controls placement
+  });
+
+  it("GET with a batch link shows the resolved landing folder", async () => {
+    const { token } = await signUploadToken(env, { target_note: "Projects/Plan.md", max_files: 5 });
+    const r = await handleUpload(new Request("https://x/upload?t=" + encodeURIComponent(token)), env);
+    const body = await r!.text();
+    expect(body).toContain("Projects/files/"); // per_note_subfolder default
+  });
+
+  it("GET with an invalid/used link shows a notice and no form", async () => {
+    const r = await handleUpload(new Request("https://x/upload?t=not-a-real-token"), env);
+    const body = await r!.text();
+    expect(body).toContain("no longer usable");
+    expect(body).not.toContain('id="file"'); // no upload form
   });
 
   it("rejects a POST with no credentials", async () => {

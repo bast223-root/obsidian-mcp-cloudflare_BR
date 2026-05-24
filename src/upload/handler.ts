@@ -1,7 +1,13 @@
 import { buildVaultConfig } from "../config";
 import { log } from "../log";
 import { R2Client } from "../vault/r2-client";
-import { DEFAULT_ATTACHMENT_EXTENSIONS, parseExtensionAllowlist, sanitizeFilename } from "../vault/attachments";
+import {
+  DEFAULT_ATTACHMENT_EXTENSIONS,
+  dirOf,
+  parseExtensionAllowlist,
+  resolveAttachmentPath,
+  sanitizeFilename,
+} from "../vault/attachments";
 import { finalizeUpload } from "../mcp/tools/attachments";
 import { reconcileUploadType } from "./sniff";
 import { renderUploadPage } from "./page";
@@ -86,6 +92,37 @@ function statusForReason(reason: string): number {
  * lives on the OAuth defaultHandler), so every POST must present either the
  * long-lived UPLOAD_TOKEN bearer or a valid single-use signed link token.
  */
+/**
+ * Render the GET /upload page. For a signed `?t=` link we verify it server-side
+ * (the token is opaque to the browser) and show the destination the file will
+ * land at, plus an "invalid/used/expired" notice when the link is no longer
+ * good. The bare bookmarked/bearer page has no scope yet, so it shows the
+ * editable form.
+ */
+async function renderGetPage(req: Request, env: Env, url: URL): Promise<string> {
+  const linkToken = url.searchParams.get("t");
+  if (!linkToken) return renderUploadPage();
+
+  const verified = await verifyUploadToken(env, linkToken);
+  if (!verified.ok) return renderUploadPage({ linkError: verified.reason });
+
+  const scope = verified.value;
+  let destination: string;
+  if (scope.dest_path) {
+    destination = scope.dest_path;
+  } else {
+    const cfg = buildVaultConfig(env);
+    const probe = resolveAttachmentPath(cfg, {
+      target_note: scope.target_note,
+      subfolder: scope.subfolder,
+      filename: "probe.bin",
+    });
+    const dir = probe.ok ? dirOf(probe.value) : "";
+    destination = `${dir || "(vault root)"}/`;
+  }
+  return renderUploadPage({ destination, targetNote: scope.target_note });
+}
+
 export async function handleUpload(req: Request, env: Env): Promise<Response | null> {
   const url = new URL(req.url);
   if (url.pathname !== "/upload") return null;
@@ -96,7 +133,7 @@ export async function handleUpload(req: Request, env: Env): Promise<Response | n
       : json({ ok: false, reason: "upload_disabled" }, 503);
   }
 
-  if (req.method === "GET") return html(renderUploadPage());
+  if (req.method === "GET") return html(await renderGetPage(req, env, url));
   if (req.method !== "POST") return json({ ok: false, reason: "method_not_allowed" }, 405);
 
   // CSRF hardening: only accept multipart form posts (browser fetch with
