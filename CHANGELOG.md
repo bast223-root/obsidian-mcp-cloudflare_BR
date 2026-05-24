@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — direct upload endpoint (large files / mobile photos)
+
+- Authenticated HTTP upload path so users can get real photos into the vault, which MCP tool calls can't carry (tool-call payloads are capped by the client, and a user-uploaded image only reaches the model as vision, not reproducible bytes):
+  - `POST /upload` (multipart) and a self-served `GET /upload` web page, on the Worker's public handler. Authenticated by an `Authorization: Bearer <UPLOAD_TOKEN>` (bookmarked page / iOS Shortcut) or a short-lived single-use `?t=` link token.
+  - `create_upload_link` MCP tool — mints a tappable, expiring, single-use link (HMAC-signed, jti tracked in `OAUTH_KV`, consumed on first success) that Claude presents in chat. Two modes: a deterministic single-file link (`filename` → baked exact `dest_path` Claude can poll) and a batch link (the page accepts up to `max_files`, found afterward via `list_attachments`).
+  - `move_attachment(from_path, to_path, overwrite?)` MCP tool — server-side R2 move/rename (no bytes through the model) so a file uploaded to a guess/holding location can be relocated once the destination note is known. Allowlist-guarded; does not rewrite embeds.
+  - Server-side magic-byte content sniffing: corrects mislabeled files (a JPEG named `.png` → `.jpg`) and rejects a non-image masquerading as an image extension (`content_mismatch`). Folds in the earlier extension/MIME sanity-check idea.
+  - Security: multipart-only (CSRF), never cookie auth; allowlist + `ATTACHMENT_MAX_BYTES` enforced; one-time links can't be replayed.
+- New secret `UPLOAD_TOKEN` (bearer + link-signing key; unset disables the endpoint) and wrangler var `SERVICE_BASE_URL` (this Worker's origin; defaults to `https://${MCP_HOSTNAME}`).
+- `upload_attachment_data`'s description now steers callers to small files only and to `create_upload_link` / `upload_attachment_url` for anything larger.
+
 ### Added — attachment support
 
 - Six new tools expose the vault's binary files (images, PDFs, configurable types) that Remotely Save already syncs into R2:

@@ -1,9 +1,23 @@
 import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
+// Secrets / provider bindings not present in wrangler.jsonc `vars`, so they are
+// not in the generated `worker-configuration.d.ts`. Augment both the global Env
+// (used by the Worker code) and `Cloudflare.Env` (what `cloudflare:test` returns
+// in the vitest pool) so the two stay assignable.
+interface ManualBindings {
+  /** Secret. Long-lived bearer token for the direct HTTP upload endpoint and the
+   * HMAC signing key for short-lived upload links. Set via
+   * `wrangler secret put UPLOAD_TOKEN`. Empty/unset disables the endpoint. */
+  UPLOAD_TOKEN: string;
+  OAUTH_PROVIDER: OAuthHelpers;
+}
+
 declare global {
-  interface Env {
-    AUTH_PASSWORD: string;
-    OAUTH_PROVIDER: OAuthHelpers;
+  // AUTH_PASSWORD comes from the generated `__BaseEnv_Env`; only the manual
+  // bindings need adding here.
+  interface Env extends ManualBindings {}
+  namespace Cloudflare {
+    interface Env extends ManualBindings {}
   }
 }
 

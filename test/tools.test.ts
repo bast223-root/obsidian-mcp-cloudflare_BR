@@ -19,6 +19,7 @@ import {
   deleteAttachment,
   headAttachment,
   listAttachments,
+  moveAttachment,
   readAttachment,
   uploadAttachmentData,
   uploadAttachmentUrl,
@@ -1034,6 +1035,45 @@ describe("attachment tools", () => {
 
     const scoped = await listAttachments(c, cfg, { prefix: "files/" });
     expect(scoped.items.map((i) => i.path)).toEqual(["files/a.png"]);
+  });
+
+  it("moveAttachment relocates bytes server-side", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64, dest_path: "Inbox/a.png" });
+    const r = await moveAttachment(c, cfg, { from_path: "Inbox/a.png", to_path: "Projects/files/a.png" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.to).toBe("Projects/files/a.png");
+      expect(r.value.embed_markdown).toBe("![[Projects/files/a.png]]");
+      expect(r.value.content_type).toBe("image/png");
+    }
+    expect(await c.getBinary("Inbox/a.png")).toBeNull();
+    expect(await c.getBinary("Projects/files/a.png")).not.toBeNull();
+  });
+
+  it("moveAttachment won't clobber without overwrite, and reports same_path/not_found", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64, dest_path: "files/a.png" });
+    await uploadAttachmentData(c, cfg, { filename: "b.png", data_base64: PNG_B64, dest_path: "files/b.png" });
+
+    const clobber = await moveAttachment(c, cfg, { from_path: "files/a.png", to_path: "files/b.png" });
+    expect(clobber.ok).toBe(false);
+    if (!clobber.ok) expect(clobber.reason).toBe("exists");
+
+    const overwrite = await moveAttachment(c, cfg, { from_path: "files/a.png", to_path: "files/b.png", overwrite: true });
+    expect(overwrite.ok).toBe(true);
+
+    expect((await moveAttachment(c, cfg, { from_path: "x.png", to_path: "x.png" })).ok).toBe(false);
+    const missing = await moveAttachment(c, cfg, { from_path: "files/none.png", to_path: "files/c.png" });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.reason).toBe("not_found");
+  });
+
+  it("moveAttachment refuses to move a non-allowlisted path (e.g. a note)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await moveAttachment(c, cfg, { from_path: "Note.md", to_path: "Other.md" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("disallowed_extension");
   });
 
   it("deleteAttachment is idempotent and refuses non-allowlisted paths", async () => {

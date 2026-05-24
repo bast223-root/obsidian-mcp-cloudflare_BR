@@ -49,7 +49,7 @@ export interface UploadResult {
   content_type: string;
 }
 
-async function finalizeUpload(
+export async function finalizeUpload(
   c: R2Client,
   cfg: VaultConfig,
   args: { target_note?: string; subfolder?: string; dest_path?: string; overwrite?: boolean },
@@ -282,4 +282,55 @@ export async function deleteAttachment(
   if (!extR.ok) return extR;
   await c.delete(args.path);
   return ok({ path: args.path, deleted: true });
+}
+
+export interface MoveAttachmentResult {
+  from: string;
+  to: string;
+  embed_markdown: string;
+  etag: string;
+  size: number;
+  content_type: string;
+}
+
+/**
+ * Move or rename an attachment entirely server-side (R2 copy-then-delete) — the
+ * way to relocate a large file without round-tripping its bytes through a tool
+ * call. Both paths must be allowlisted (so a note can't be moved via this tool).
+ * Non-clobber unless `overwrite`. NOTE: this does NOT rewrite embeds in notes —
+ * use it before embedding the attachment, or re-embed afterward with the
+ * returned `embed_markdown`. Fails with reason='same_path', 'not_found',
+ * 'exists', or 'disallowed_extension'.
+ */
+export async function moveAttachment(
+  c: R2Client,
+  cfg: VaultConfig,
+  args: { from_path: string; to_path: string; overwrite?: boolean },
+): Promise<ToolResult<MoveAttachmentResult>> {
+  if (args.from_path === args.to_path) return err("same_path", { path: args.from_path });
+  const allow = allowlistFor(cfg);
+  const fromExt = assertAllowedExtension(args.from_path, allow);
+  if (!fromExt.ok) return fromExt;
+  const toExt = assertAllowedExtension(args.to_path, allow);
+  if (!toExt.ok) return toExt;
+
+  const obj = await c.getBinary(args.from_path);
+  if (!obj) return err("not_found", { path: args.from_path });
+  try {
+    const { etag, size } = await c.putBinary(args.to_path, obj.body, obj.contentType, {
+      onlyIfNotExists: !args.overwrite,
+    });
+    await c.delete(args.from_path);
+    return ok({
+      from: args.from_path,
+      to: args.to_path,
+      embed_markdown: buildEmbedMarkdown(args.to_path, null, "wikilink"),
+      etag,
+      size,
+      content_type: obj.contentType,
+    });
+  } catch (e) {
+    if (e instanceof ObjectExistsError) return err("exists", { path: args.to_path });
+    throw e;
+  }
 }

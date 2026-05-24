@@ -1,0 +1,41 @@
+import type { AttachmentsMoveWithNote, AttachmentsPathMode, VaultConfig } from "./types";
+
+const PATH_MODES: AttachmentsPathMode[] = [
+  "per_note_subfolder",
+  "vault_default",
+  "caller_specified",
+];
+
+export function parsePathMode(v: string | undefined): AttachmentsPathMode {
+  return (PATH_MODES as string[]).includes(v ?? "")
+    ? (v as AttachmentsPathMode)
+    : "per_note_subfolder";
+}
+
+export function parseMoveWithNote(v: string | undefined): AttachmentsMoveWithNote {
+  return v === "never" ? "never" : "unique_refs";
+}
+
+export function parsePositiveInt(v: unknown, fallback: number): number {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+/**
+ * Build the runtime VaultConfig from the Worker env. Shared by the MCP agent
+ * (per-request, in the Durable Object) and the HTTP upload handler, so both
+ * apply identical attachment policy. Pure given `env`.
+ */
+export function buildVaultConfig(env: Env): VaultConfig {
+  return {
+    prefix: env.VAULT_PREFIX,
+    dailyNotePathTemplate: env.DAILY_NOTE_PATH_TEMPLATE,
+    permalinkBaseUrl: env.PERMALINK_BASE_URL ?? "",
+    attachmentsPathMode: parsePathMode(env.ATTACHMENTS_PATH_MODE),
+    attachmentsSubfolder: env.ATTACHMENTS_SUBFOLDER || "files",
+    attachmentAllowedExtensions: env.ATTACHMENT_ALLOWED_EXTENSIONS ?? "",
+    attachmentMaxBytes: parsePositiveInt(env.ATTACHMENT_MAX_BYTES, 26214400),
+    attachmentsMoveWithNote: parseMoveWithNote(env.ATTACHMENTS_MOVE_WITH_NOTE),
+    attachmentUrlTimeoutMs: parsePositiveInt(env.ATTACHMENT_URL_TIMEOUT_MS, 20000),
+  };
+}

@@ -1,13 +1,8 @@
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type {
-  AttachmentsMoveWithNote,
-  AttachmentsPathMode,
-  Props,
-  ToolResult,
-  VaultConfig,
-} from "../types";
+import type { Props, ToolResult, VaultConfig } from "../types";
+import { buildVaultConfig } from "../config";
 import { R2Client } from "../vault/r2-client";
 import { SqlStore, VaultIndex } from "../vault/index-store";
 import { listNotes, readNote, createNote, replaceNote, replaceBody, deleteNote, patchNote, moveNote } from "./tools/notes";
@@ -18,10 +13,12 @@ import {
   deleteAttachment,
   headAttachment,
   listAttachments,
+  moveAttachment,
   readAttachment,
   uploadAttachmentData,
   uploadAttachmentUrl,
 } from "./tools/attachments";
+import { createUploadLink } from "../upload/tokens";
 import { type McpContent, type McpResponse, errResponse, instrument } from "./instrument";
 
 const NotePath = z.string().min(1).regex(/\.md$/i, "path must end with .md");
@@ -44,27 +41,6 @@ function hasControlChar(s: string): boolean {
     if (c < 0x20 || c === 0x7f) return true;
   }
   return false;
-}
-
-const PATH_MODES: AttachmentsPathMode[] = [
-  "per_note_subfolder",
-  "vault_default",
-  "caller_specified",
-];
-
-function parsePathMode(v: string | undefined): AttachmentsPathMode {
-  return (PATH_MODES as string[]).includes(v ?? "")
-    ? (v as AttachmentsPathMode)
-    : "per_note_subfolder";
-}
-
-function parseMoveWithNote(v: string | undefined): AttachmentsMoveWithNote {
-  return v === "never" ? "never" : "unique_refs";
-}
-
-function parsePositiveInt(v: unknown, fallback: number): number {
-  const n = typeof v === "number" ? v : Number(v);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
 
 function okText(text: string): McpResponse {
@@ -117,17 +93,7 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
   }
 
   private get cfg(): VaultConfig {
-    return {
-      prefix: this.env.VAULT_PREFIX,
-      dailyNotePathTemplate: this.env.DAILY_NOTE_PATH_TEMPLATE,
-      permalinkBaseUrl: this.env.PERMALINK_BASE_URL ?? "",
-      attachmentsPathMode: parsePathMode(this.env.ATTACHMENTS_PATH_MODE),
-      attachmentsSubfolder: this.env.ATTACHMENTS_SUBFOLDER || "files",
-      attachmentAllowedExtensions: this.env.ATTACHMENT_ALLOWED_EXTENSIONS ?? "",
-      attachmentMaxBytes: parsePositiveInt(this.env.ATTACHMENT_MAX_BYTES, 26214400),
-      attachmentsMoveWithNote: parseMoveWithNote(this.env.ATTACHMENTS_MOVE_WITH_NOTE),
-      attachmentUrlTimeoutMs: parsePositiveInt(this.env.ATTACHMENT_URL_TIMEOUT_MS, 20000),
-    };
+    return buildVaultConfig(this.env);
   }
 
   private get index(): VaultIndex {
@@ -367,7 +333,7 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
 
     this.server.tool(
       "upload_attachment_data",
-      "Upload a binary attachment (image, PDF, …) into the vault from base64 data — e.g. a screenshot or pasted image. Accepts a raw base64 string or a `data:<mime>;base64,…` data URL in `data_base64`. Path policy: by default the file lands in a `files/` subfolder of `target_note`'s folder (pass `target_note` to anchor it); `subfolder` overrides the folder name and `dest_path` overrides the whole path. Returns JSON `{path, embed_markdown, permalink, etag, size, content_type}` — paste `embed_markdown` into a note via patch_note to display it. Fails with reason='invalid_base64', 'too_large' (exceeds ATTACHMENT_MAX_BYTES), 'disallowed_extension' (not in the allowlist; the response lists allowed extensions), 'invalid_filename'/'invalid_path', or 'exists' (set overwrite=true to replace).",
+      "Upload a SMALL binary attachment (image, PDF, …) into the vault from base64 data — e.g. an icon or small diagram. IMPORTANT SIZE LIMIT: the whole file travels inside this tool call as base64, and most MCP clients cap tool-call payloads at a few hundred KB — a larger `data_base64` fails to send (the call hangs or errors client-side and never reaches the server). For files above ~200 KB, OR whenever the asset is reachable by an HTTPS URL, use `upload_attachment_url` instead — the server fetches the bytes so nothing large rides in the tool call. Accepts a raw base64 string or a `data:<mime>;base64,…` data URL in `data_base64`. Path policy: by default the file lands in a `files/` subfolder of `target_note`'s folder (pass `target_note` to anchor it); `subfolder` overrides the folder name and `dest_path` overrides the whole path. Returns JSON `{path, embed_markdown, permalink, etag, size, content_type}` — paste `embed_markdown` into a note via patch_note to display it. Fails with reason='invalid_base64', 'too_large' (exceeds ATTACHMENT_MAX_BYTES), 'disallowed_extension' (not in the allowlist; the response lists allowed extensions), 'invalid_filename'/'invalid_path', or 'exists' (set overwrite=true to replace).",
       {
         filename: z.string().min(1),
         data_base64: z.string().min(1),
@@ -401,6 +367,22 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
           fromToolResult(await uploadAttachmentUrl(this.vault, this.cfg, args), (v) =>
             JSON.stringify(v),
           ),
+        ),
+    );
+
+    this.server.tool(
+      "create_upload_link",
+      "Mint a short-lived, single-use web link the USER taps to upload file(s) directly to the vault — use this for photos/screenshots and anything too large for upload_attachment_data (i.e. most real images). The bytes go straight from the user's browser to the server, bypassing the tool-call payload limit. Present the returned `upload_url` as a tappable link and tell the user to open it and pick/take the file(s). Two modes: (1) pass `filename` to get a DETERMINISTIC single-file link — the file lands at exactly the returned `dest_path`, which you can then poll with head_attachment/read_attachment after the user says they've uploaded; (2) omit `filename` for a BATCH link — the user may pick up to `max_files` files (default 10) that land in the target folder, which you find afterward via list_attachments. `target_note` (a .md path) and `subfolder` set the destination folder. You don't need to know the final note at upload time — upload to your best guess (or a holding folder) and use move_attachment later to relocate. To extract text, call read_attachment on the stored file (it returns the image to you). The link expires (default 15 min, max 30) and works once. Returns JSON `{upload_url, expires_at, dest_path, target_note, subfolder, multiple}`. Fails with reason='upload_disabled' if the endpoint isn't configured.",
+      {
+        target_note: NotePath.optional(),
+        subfolder: z.string().optional(),
+        filename: z.string().optional(),
+        max_files: z.number().int().positive().max(50).optional(),
+        ttl_minutes: z.number().int().positive().max(30).optional(),
+      },
+      async (args) =>
+        instrument("create_upload_link", async () =>
+          fromToolResult(await createUploadLink(this.env, args), (v) => JSON.stringify(v)),
         ),
     );
 
@@ -463,6 +445,16 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
       },
       async (args) =>
         instrument("list_attachments", async () => okJson(await listAttachments(this.vault, this.cfg, args))),
+    );
+
+    this.server.tool(
+      "move_attachment",
+      "Move or rename an attachment within the vault, entirely server-side (no bytes pass through this call, so it works for large files). Use it to relocate a file you uploaded to a guess/holding location once you know the right note or name. Both paths must be allowlisted extensions (so a note can't be moved via this tool). Returns JSON `{from, to, embed_markdown, etag, size, content_type}`. IMPORTANT: this does not rewrite embeds already placed in notes — move BEFORE embedding, or re-embed afterward using the returned `embed_markdown`. Fails with reason='same_path', 'not_found', 'exists' (set overwrite=true to replace), or 'disallowed_extension'.",
+      { from_path: AttachmentPath, to_path: AttachmentPath, overwrite: z.boolean().optional() },
+      async (args) =>
+        instrument("move_attachment", async () =>
+          fromToolResult(await moveAttachment(this.vault, this.cfg, args), (v) => JSON.stringify(v)),
+        ),
     );
 
     this.server.tool(

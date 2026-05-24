@@ -87,6 +87,14 @@ npx wrangler secret put AUTH_PASSWORD
 
 When prompted, paste a long random password. This is what you'll type on the consent screen each time you (re)connect Claude.ai. Save it in a password manager.
 
+Optionally set the upload token to enable the direct file-upload endpoint (large images / mobile photos — see README's "Uploading large images / mobile photos"):
+
+```bash
+npx wrangler secret put UPLOAD_TOKEN
+```
+
+Paste a second long random string. Leave it unset to keep the `/upload` endpoint and `create_upload_link` tool disabled.
+
 ### 6. Test and dry-run
 
 ```bash

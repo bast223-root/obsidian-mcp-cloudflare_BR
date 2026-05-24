@@ -68,6 +68,8 @@ Obsidian (Mac / iOS / iPad)
 | `head_attachment(path)` | Metadata only — JSON `{path, size, content_type, etag, uploaded}`. Use to check `size` before a `read_attachment`. Failure: `not_found` |
 | `list_attachments(prefix?, limit?, cursor?)` | List non-`.md` objects. Returns JSON `{items, cursor}`; `cursor` paginates. Empty `prefix` lists the whole vault |
 | `delete_attachment(path)` | Delete an attachment. Idempotent. Only allowlisted extensions (so a note can't be deleted via this tool). Failure: `disallowed_extension` |
+| `move_attachment(from_path, to_path, overwrite?)` | Move/rename an attachment server-side (R2 copy+delete — works for large files). Both paths allowlisted. Does **not** rewrite embeds in notes; move before embedding or re-embed with the returned `embed_markdown`. Returns JSON `{from, to, embed_markdown, etag, size, content_type}`. Failures: `same_path`, `not_found`, `exists`, `disallowed_extension` |
+| `create_upload_link(target_note?, subfolder?, filename?, max_files?, ttl_minutes?)` | Mint a short-lived, single-use web link the **user taps** to upload file(s) straight to the vault (bypassing the tool-call payload limit) — the way to handle real photos/large images, especially from mobile. With `filename`: deterministic single-file link (returns the exact `dest_path` to poll). Without: batch link for up to `max_files`. Returns JSON `{upload_url, expires_at, dest_path, target_note, subfolder, multiple}`. Failure: `upload_disabled` |
 
 Tool failures use the MCP `isError: true` convention with a JSON-encoded body of the shape `{ ok: false, reason, ...context }`. Failures are not thrown as JSON-RPC errors, so they do not count as Durable Object RPC errors at the Cloudflare layer.
 
@@ -204,6 +206,54 @@ Caveat (same R2-has-no-transactions reality as the note rollback): attachment by
 ### URL-fetch security model
 
 `upload_attachment_url` is HTTPS-only and rejects IP-literal, `localhost`, `*.local`, and `*.internal` hosts. Redirects are followed manually (cap 5 hops) with the same host/protocol check re-run on every hop, so the SSRF guard covers the whole chain — not just the initial URL. HTML responses and bodies exceeding `ATTACHMENT_MAX_BYTES` (by `Content-Length` or actual size) are refused. Prefer direct asset URLs (`.png`/`.pdf`/…) over web pages.
+
+## Uploading large images / mobile photos (direct upload endpoint)
+
+`upload_attachment_data` only works for small files. An MCP tool call carries its arguments as model-generated JSON, and Anthropic's clients cap that payload at a few hundred KB — so a real photo's base64 can't be transmitted (the desktop app shows "Couldn't send tool approval"; mobile hangs). There is no binary input channel for MCP tools, and a user-uploaded image reaches the model only as *vision* (it can't faithfully reproduce the bytes), so chunking the tool call wouldn't help either. The robust pattern is to move the bytes **out of band**: the Worker exposes an authenticated HTTP upload endpoint the user hits directly from a browser, and Claude just embeds the resulting path.
+
+### Three ways to upload
+
+1. **Claude-minted link (best for mobile).** Ask Claude to upload a photo; it calls `create_upload_link` and prints a tappable URL. Tap it → the upload page opens already authorized → choose/take the file(s) → they land in the vault. The link is single-use and expires (default 15 min). Two flavors:
+   - **Deterministic single-file** — when Claude passes a `filename`, the link returns the exact `dest_path` the file will land at, so Claude can poll `head_attachment`/`read_attachment` on that known path after you say you've uploaded.
+   - **Batch** — without a filename, you can pick several files at once; they fill the target folder and Claude finds them via `list_attachments`.
+2. **Bookmarked web page.** Open `https://<your-host>/upload` in any browser (iOS Safari or desktop). Enter your `UPLOAD_TOKEN` once (saved in the browser); thereafter it's a one-tap uploader. iOS offers Camera / Photo Library directly from the file picker.
+3. **iOS Shortcut (share sheet).** A one-action Shortcut → from Photos, Share → upload in two taps. Recipe below.
+
+All three POST to the same `POST /upload` endpoint. **You don't upload twice:** once the file is in the vault, Claude reads it back for OCR/text extraction with `read_attachment` (which returns the image to Claude's vision — a tool *result*, not subject to the outbound tool-call size cap that blocks `upload_attachment_data`). So the loop is: tap the link and upload → tell Claude "done" (or it polls the known path) → Claude reads the image, extracts text, writes the note, embeds the path. Bytes go user→Worker; vision/authoring stays Claude→MCP.
+
+If Claude didn't know the destination note at upload time, it can upload to a guess/holding folder and relocate later with `move_attachment` (server-side, no re-upload) before embedding.
+
+### Setup
+
+Two one-time steps before the endpoint works:
+
+```bash
+npx wrangler secret put UPLOAD_TOKEN     # a long random string; the bearer token + link-signing key
+```
+
+and set `SERVICE_BASE_URL` (this Worker's own public origin, e.g. `https://obsv.example.com`) in `wrangler.example.jsonc` → `npm run setup`. In the template it defaults to `https://${MCP_HOSTNAME}`, so it's usually filled automatically. If `UPLOAD_TOKEN` is unset the endpoint returns 503 and `create_upload_link` returns `reason='upload_disabled'`.
+
+### iOS Shortcut recipe
+
+Shortcuts → new shortcut → add **Get Contents of URL**:
+
+- URL: `https://<your-host>/upload`
+- Method: **POST**
+- Headers: `Authorization` = `Bearer <your UPLOAD_TOKEN>`
+- Request Body: **Form**
+  - `file` = **Shortcut Input** (the shared photo)
+  - optionally `target_note` = a note path
+
+Then in the shortcut's settings enable **Show in Share Sheet** (accept Images). Now Photos → Share → your shortcut uploads in two taps.
+
+### Security model
+
+The endpoint lives on the public (non-OAuth) handler, so every request authenticates:
+
+- **`Authorization: Bearer <UPLOAD_TOKEN>`** — the long-lived secret, for the bookmarked page and the Shortcut.
+- **`?t=<signed token>`** — short-lived, single-use links from `create_upload_link`. Tokens are HMAC-signed with `UPLOAD_TOKEN`, carry an expiry + the target note/folder, and their id is tracked in `OAUTH_KV` and deleted on first successful upload — a leaked link can't be replayed and only works briefly.
+- **CSRF hardening:** only `multipart/form-data` POSTs are accepted; auth is never read from cookies, so a malicious page can't ride your session.
+- **Content sniffing:** the server reads magic bytes and stores the true type — a JPEG misnamed `.png` is corrected to `.jpg`, and a non-image masquerading as an image extension is rejected (`content_mismatch`). The extension allowlist and `ATTACHMENT_MAX_BYTES` are enforced server-side.
 
 ## Gotchas
 

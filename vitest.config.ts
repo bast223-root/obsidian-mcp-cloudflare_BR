@@ -12,6 +12,8 @@ const poolOptions = {
       VAULT_PREFIX: "",
       DAILY_NOTE_PATH_TEMPLATE: "Daily Notes/{{YYYY-MM-DD}}.md",
       AUTH_PASSWORD: "test-password",
+      UPLOAD_TOKEN: "test-upload-secret",
+      SERVICE_BASE_URL: "https://vault.example.test",
     },
   },
 };
