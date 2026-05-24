@@ -15,7 +15,6 @@ import {
   listAttachments,
   moveAttachment,
   readAttachment,
-  uploadAttachmentData,
   uploadAttachmentUrl,
 } from "./tools/attachments";
 import { createUploadLink } from "../upload/tokens";
@@ -331,29 +330,16 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
         }),
     );
 
-    this.server.tool(
-      "upload_attachment_data",
-      "Upload a SMALL binary attachment (image, PDF, …) into the vault from base64 data — e.g. an icon or small diagram. IMPORTANT SIZE LIMIT: the whole file travels inside this tool call as base64, and most MCP clients cap tool-call payloads at a few hundred KB — a larger `data_base64` fails to send (the call hangs or errors client-side and never reaches the server). For files above ~200 KB, OR whenever the asset is reachable by an HTTPS URL, use `upload_attachment_url` instead — the server fetches the bytes so nothing large rides in the tool call. Accepts a raw base64 string or a `data:<mime>;base64,…` data URL in `data_base64`. Path policy: by default the file lands in a `files/` subfolder of `target_note`'s folder (pass `target_note` to anchor it); `subfolder` overrides the folder name and `dest_path` overrides the whole path. Returns JSON `{path, embed_markdown, permalink, etag, size, content_type}` — paste `embed_markdown` into a note via patch_note to display it. Fails with reason='invalid_base64', 'too_large' (exceeds ATTACHMENT_MAX_BYTES), 'disallowed_extension' (not in the allowlist; the response lists allowed extensions), 'invalid_filename'/'invalid_path', or 'exists' (set overwrite=true to replace).",
-      {
-        filename: z.string().min(1),
-        data_base64: z.string().min(1),
-        target_note: NotePath.optional(),
-        subfolder: z.string().optional(),
-        content_type: z.string().optional(),
-        overwrite: z.boolean().optional(),
-        dest_path: AttachmentPath.optional(),
-      },
-      async (args) =>
-        instrument("upload_attachment_data", async () =>
-          fromToolResult(await uploadAttachmentData(this.vault, this.cfg, args), (v) =>
-            JSON.stringify(v),
-          ),
-        ),
-    );
+    // NOTE: there is intentionally no `upload_attachment_data` (inline-base64)
+    // tool. A tool call carries its arguments as the model's own output tokens,
+    // so a base64 payload more than a few KB exhausts the model's output budget
+    // and the call truncates mid-stream — unusable for real files. Binary uploads
+    // go through `create_upload_link` (user taps a link) or `upload_attachment_url`
+    // (server fetches a URL) instead.
 
     this.server.tool(
       "upload_attachment_url",
-      "Fetch an asset from an HTTPS URL server-side and store it as a vault attachment. Prefer a direct asset URL (ending in .png/.jpg/.pdf/…) over a web page — HTML responses are rejected. Security: HTTPS only, no IP-literal or localhost hosts, validated across redirects, with a size cap (ATTACHMENT_MAX_BYTES) and fetch timeout. If `filename` is omitted it is taken from the URL, else synthesized from the response Content-Type. Same path policy and return shape as upload_attachment_data. Fails with reason='invalid_url', 'insecure_url' (not https), 'disallowed_host', 'too_many_redirects', 'fetch_failed', 'html_response', 'too_large', 'no_extension_inferable', 'disallowed_extension', or 'exists'.",
+      "Fetch an asset from an HTTPS URL server-side and store it as a vault attachment. Prefer a direct asset URL (ending in .png/.jpg/.pdf/…) over a web page — HTML responses are rejected. Security: HTTPS only, no IP-literal or localhost hosts, validated across redirects, with a size cap (ATTACHMENT_MAX_BYTES) and fetch timeout. If `filename` is omitted it is taken from the URL, else synthesized from the response Content-Type. Returns JSON `{path, embed_markdown, permalink, etag, size, content_type}`. Fails with reason='invalid_url', 'insecure_url' (not https), 'disallowed_host', 'too_many_redirects', 'fetch_failed', 'html_response', 'too_large', 'no_extension_inferable', 'disallowed_extension', or 'exists'.",
       {
         source_url: z.string().min(1),
         filename: z.string().optional(),
@@ -372,7 +358,7 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
 
     this.server.tool(
       "create_upload_link",
-      "Mint a short-lived, single-use web link the USER taps to upload file(s) directly to the vault — use this for photos/screenshots and anything too large for upload_attachment_data (i.e. most real images). The bytes go straight from the user's browser to the server, bypassing the tool-call payload limit. Present the returned `upload_url` as a tappable link and tell the user to open it and pick/take the file(s). Mode is chosen by `filename` alone: (1) pass `filename` for a DETERMINISTIC single-file link — the file lands at exactly the returned `dest_path`, which you can then poll with head_attachment/read_attachment after the user says they've uploaded; (2) omit `filename` for a BATCH link — the user may pick up to `max_files` files (default 10) that land in `landing_dir`, which you find afterward via list_attachments. Any `max_files` value (even 1) stays batch mode; only `filename` triggers deterministic mode. `target_note` (a .md path) and `subfolder` set the destination folder. You don't need to know the final note at upload time — upload to your best guess (or a holding folder) and use move_attachment later to relocate. To extract text, call read_attachment on the stored file (it returns the image to you). The link expires (default 15 min, max 30) and works once. Returns JSON `{upload_url, expires_at, landing_dir, multiple, ...}` — `landing_dir` is the vault folder the file(s) land in, so after a batch upload you can call list_attachments scoped to that prefix instead of scanning the whole vault. `dest_path` is included only in deterministic mode (when you passed `filename`); `target_note`/`subfolder` are echoed only when you passed them. Fails with reason='upload_disabled' if the endpoint isn't configured.",
+      "Mint a short-lived, single-use web link the USER taps to upload file(s) directly to the vault — this is THE way to get a local image/photo/PDF into the vault (a real file cannot be sent through a tool call at all; its bytes would blow the model's output budget). The bytes go straight from the user's browser to the server. Present the returned `upload_url` as a tappable link and tell the user to open it and pick/take the file(s). Mode is chosen by `filename` alone: (1) pass `filename` for a DETERMINISTIC single-file link — the file lands at exactly the returned `dest_path`, which you can then poll with head_attachment/read_attachment after the user says they've uploaded; (2) omit `filename` for a BATCH link — the user may pick up to `max_files` files (default 10) that land in `landing_dir`, which you find afterward via list_attachments. Any `max_files` value (even 1) stays batch mode; only `filename` triggers deterministic mode. `target_note` (a .md path) and `subfolder` set the destination folder. You don't need to know the final note at upload time — upload to your best guess (or a holding folder) and use move_attachment later to relocate. To extract text, call read_attachment on the stored file (it returns the image to you). The link expires (default 15 min, max 30) and works once. Returns JSON `{upload_url, expires_at, landing_dir, multiple, ...}` — `landing_dir` is the vault folder the file(s) land in, so after a batch upload you can call list_attachments scoped to that prefix instead of scanning the whole vault. `dest_path` is included only in deterministic mode (when you passed `filename`); `target_note`/`subfolder` are echoed only when you passed them. Fails with reason='upload_disabled' if the endpoint isn't configured.",
       {
         target_note: NotePath.optional(),
         subfolder: z.string().optional(),

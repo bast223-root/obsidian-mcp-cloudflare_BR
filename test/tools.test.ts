@@ -21,7 +21,6 @@ import {
   listAttachments,
   moveAttachment,
   readAttachment,
-  uploadAttachmentData,
   uploadAttachmentUrl,
 } from "../src/mcp/tools/attachments";
 import { makeCfg } from "./_helpers";
@@ -871,114 +870,13 @@ describe("attachment tools", () => {
 
   const PNG_BYTES = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
   const PNG_B64 = btoa(String.fromCharCode(...PNG_BYTES));
-  const PDF_B64 = btoa("%PDF-1.4 fake");
-
-  it("uploadAttachmentData lands a PNG under the note's files/ subfolder", async () => {
-    const c = new R2Client(env.VAULT, cfg);
-    const r = await uploadAttachmentData(c, cfg, {
-      filename: "diagram.png",
-      data_base64: PNG_B64,
-      target_note: "Projects/Plan.md",
-    });
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.value.path).toBe("Projects/files/diagram.png");
-      expect(r.value.content_type).toBe("image/png");
-      expect(r.value.size).toBe(PNG_BYTES.length);
-      expect(r.value.embed_markdown).toBe("![[files/diagram.png]]");
-    }
-    const stored = await c.getBinary("Projects/files/diagram.png");
-    expect(new Uint8Array(stored!.body)).toEqual(new Uint8Array(PNG_BYTES));
-  });
-
-  it("uploadAttachmentData honors vault_default mode", async () => {
-    const c = new R2Client(env.VAULT, cfg);
-    const vd = makeCfg({ attachmentsPathMode: "vault_default", attachmentsSubfolder: "_att" });
-    const r = await uploadAttachmentData(c, vd, {
-      filename: "a.png",
-      data_base64: PNG_B64,
-      target_note: "Deep/Note.md",
-    });
-    expect(r.ok && r.value.path).toBe("_att/a.png");
-  });
-
-  it("uploadAttachmentData honors caller_specified mode", async () => {
-    const c = new R2Client(env.VAULT, cfg);
-    const cs = makeCfg({ attachmentsPathMode: "caller_specified" });
-    const r = await uploadAttachmentData(c, cs, {
-      filename: "a.png",
-      data_base64: PNG_B64,
-      subfolder: "Media/2026",
-    });
-    expect(r.ok && r.value.path).toBe("Media/2026/a.png");
-  });
-
-  it("uploadAttachmentData dest_path overrides path policy", async () => {
-    const c = new R2Client(env.VAULT, cfg);
-    const r = await uploadAttachmentData(c, cfg, {
-      filename: "ignored.png",
-      data_base64: PNG_B64,
-      target_note: "Note.md",
-      dest_path: "Exact/spot.png",
-    });
-    expect(r.ok && r.value.path).toBe("Exact/spot.png");
-  });
-
-  it("uploadAttachmentData accepts a data: URL and infers MIME", async () => {
-    const c = new R2Client(env.VAULT, cfg);
-    const r = await uploadAttachmentData(c, cfg, {
-      filename: "x.png",
-      data_base64: `data:image/png;base64,${PNG_B64}`,
-    });
-    expect(r.ok && r.value.content_type).toBe("image/png");
-  });
-
-  it("uploadAttachmentData rejects invalid base64", async () => {
-    const c = new R2Client(env.VAULT, cfg);
-    const r = await uploadAttachmentData(c, cfg, { filename: "x.png", data_base64: "@@not base64@@" });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toBe("invalid_base64");
-  });
-
-  it("uploadAttachmentData rejects oversize payloads", async () => {
-    const c = new R2Client(env.VAULT, cfg);
-    const tiny = makeCfg({ attachmentMaxBytes: 4 });
-    const r = await uploadAttachmentData(c, tiny, { filename: "x.png", data_base64: PNG_B64 });
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.reason).toBe("too_large");
-      expect(r.max).toBe(4);
-    }
-  });
-
-  it("uploadAttachmentData rejects a disallowed extension", async () => {
-    const c = new R2Client(env.VAULT, cfg);
-    const r = await uploadAttachmentData(c, cfg, { filename: "evil.exe", data_base64: PNG_B64 });
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.reason).toBe("disallowed_extension");
-      expect(r.ext).toBe("exe");
-    }
-  });
-
-  it("uploadAttachmentData refuses to clobber without overwrite", async () => {
-    const c = new R2Client(env.VAULT, cfg);
-    await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64 });
-    const again = await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64 });
-    expect(again.ok).toBe(false);
-    if (!again.ok) expect(again.reason).toBe("exists");
-
-    const overwrite = await uploadAttachmentData(c, cfg, {
-      filename: "a.png",
-      data_base64: PNG_B64,
-      overwrite: true,
-    });
-    expect(overwrite.ok).toBe(true);
-  });
+  const PDF_BYTES = [0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]; // %PDF-1.4
+  const seed = (client: R2Client, path: string, bytes: number[], type: string) =>
+    client.putBinary(path, new Uint8Array(bytes), type);
 
   it("readAttachment returns an image-flagged result for image MIME", async () => {
     const c = new R2Client(env.VAULT, cfg);
-    await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64, dest_path: "files/a.png" });
+    await seed(c, "files/a.png", PNG_BYTES, "image/png");
     const r = await readAttachment(c, cfg, { path: "files/a.png" });
     expect(r.ok).toBe(true);
     if (r.ok) {
@@ -990,7 +888,7 @@ describe("attachment tools", () => {
 
   it("readAttachment returns a non-image result for PDF", async () => {
     const c = new R2Client(env.VAULT, cfg);
-    await uploadAttachmentData(c, cfg, { filename: "doc.pdf", data_base64: PDF_B64, dest_path: "files/doc.pdf" });
+    await seed(c, "files/doc.pdf", PDF_BYTES, "application/pdf");
     const r = await readAttachment(c, cfg, { path: "files/doc.pdf" });
     expect(r.ok).toBe(true);
     if (r.ok) {
@@ -1012,7 +910,7 @@ describe("attachment tools", () => {
 
   it("headAttachment returns metadata without bytes", async () => {
     const c = new R2Client(env.VAULT, cfg);
-    await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64, dest_path: "files/a.png" });
+    await seed(c, "files/a.png", PNG_BYTES, "image/png");
     const r = await headAttachment(c, cfg, { path: "files/a.png" });
     expect(r.ok).toBe(true);
     if (r.ok) {
@@ -1027,8 +925,8 @@ describe("attachment tools", () => {
   it("listAttachments enumerates non-md objects and scopes by prefix", async () => {
     const c = new R2Client(env.VAULT, cfg);
     await c.put("note.md", "# hi");
-    await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64, dest_path: "files/a.png" });
-    await uploadAttachmentData(c, cfg, { filename: "b.png", data_base64: PNG_B64, dest_path: "Other/b.png" });
+    await seed(c, "files/a.png", PNG_BYTES, "image/png");
+    await seed(c, "Other/b.png", PNG_BYTES, "image/png");
 
     const all = await listAttachments(c, cfg, {});
     expect(all.items.map((i) => i.path).sort()).toEqual(["Other/b.png", "files/a.png"]);
@@ -1039,7 +937,7 @@ describe("attachment tools", () => {
 
   it("moveAttachment relocates bytes server-side", async () => {
     const c = new R2Client(env.VAULT, cfg);
-    await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64, dest_path: "Inbox/a.png" });
+    await seed(c, "Inbox/a.png", PNG_BYTES, "image/png");
     const r = await moveAttachment(c, cfg, { from_path: "Inbox/a.png", to_path: "Projects/files/a.png" });
     expect(r.ok).toBe(true);
     if (r.ok) {
@@ -1053,8 +951,8 @@ describe("attachment tools", () => {
 
   it("moveAttachment won't clobber without overwrite, and reports same_path/not_found", async () => {
     const c = new R2Client(env.VAULT, cfg);
-    await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64, dest_path: "files/a.png" });
-    await uploadAttachmentData(c, cfg, { filename: "b.png", data_base64: PNG_B64, dest_path: "files/b.png" });
+    await seed(c, "files/a.png", PNG_BYTES, "image/png");
+    await seed(c, "files/b.png", PNG_BYTES, "image/png");
 
     const clobber = await moveAttachment(c, cfg, { from_path: "files/a.png", to_path: "files/b.png" });
     expect(clobber.ok).toBe(false);
@@ -1078,7 +976,7 @@ describe("attachment tools", () => {
 
   it("deleteAttachment is idempotent and refuses non-allowlisted paths", async () => {
     const c = new R2Client(env.VAULT, cfg);
-    await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64, dest_path: "files/a.png" });
+    await seed(c, "files/a.png", PNG_BYTES, "image/png");
     const del = await deleteAttachment(c, cfg, { path: "files/a.png" });
     expect(del.ok).toBe(true);
     expect(await c.getBinary("files/a.png")).toBeNull();

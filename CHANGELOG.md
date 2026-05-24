@@ -16,12 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Server-side magic-byte content sniffing: corrects mislabeled files (a JPEG named `.png` → `.jpg`) and rejects a non-image masquerading as an image extension (`content_mismatch`). Folds in the earlier extension/MIME sanity-check idea.
   - Security: multipart-only (CSRF), never cookie auth; allowlist + `ATTACHMENT_MAX_BYTES` enforced; one-time links can't be replayed.
 - New secret `UPLOAD_TOKEN` (bearer + link-signing key; unset disables the endpoint) and wrangler var `SERVICE_BASE_URL` (this Worker's origin; defaults to `https://${MCP_HOSTNAME}`).
-- `upload_attachment_data`'s description now steers callers to small files only and to `create_upload_link` / `upload_attachment_url` for anything larger.
+- No inline-base64 upload tool is provided: a tool call carries its arguments as the model's output tokens, so a base64 payload beyond a few KB exhausts the output budget and truncates mid-stream. Binary uploads go through `create_upload_link` (user taps a link) or `upload_attachment_url` (server fetch).
 
 ### Added — attachment support
 
 - Six new tools expose the vault's binary files (images, PDFs, configurable types) that Remotely Save already syncs into R2:
-  - `upload_attachment_data` — store from base64 (raw or `data:` URL) with a path policy that matches Obsidian's per-note `files/` convention; returns ready-to-paste `embed_markdown`.
   - `upload_attachment_url` — fetch an HTTPS asset server-side, SSRF-guarded (HTTPS only, no IP-literal/loopback hosts, re-validated across redirects), size-capped, HTML rejected.
   - `read_attachment` — returns an MCP `image` content block for images, base64-in-JSON for other types.
   - `head_attachment` — metadata only (size/type/etag/uploaded) to check size before reading.

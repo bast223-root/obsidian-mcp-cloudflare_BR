@@ -21,25 +21,6 @@ function allowlistFor(cfg: VaultConfig): Set<string> {
   return parseExtensionAllowlist(csv);
 }
 
-/**
- * Accept either a raw base64 string or a `data:<mime>;base64,<...>` data URL.
- * Returns the decoded bytes and any MIME hint carried by a data URL. Returns
- * null when the payload is empty or contains non-base64 characters (Buffer
- * silently drops invalid characters, so we pre-validate to catch garbage).
- */
-function decodeUpload(input: string): { bytes: Buffer; mimeHint: string | null } | null {
-  let b64 = input.trim();
-  let mimeHint: string | null = null;
-  const dataUrl = /^data:([^;,]+)?;base64,([\s\S]*)$/.exec(b64);
-  if (dataUrl) {
-    mimeHint = dataUrl[1] ?? null;
-    b64 = dataUrl[2];
-  }
-  const cleaned = b64.replace(/\s/g, "");
-  if (cleaned.length === 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(cleaned)) return null;
-  return { bytes: Buffer.from(cleaned, "base64"), mimeHint };
-}
-
 export interface UploadResult {
   path: string;
   embed_markdown: string;
@@ -84,29 +65,6 @@ export async function finalizeUpload(
     if (e instanceof ObjectExistsError) return err("exists", { path });
     throw e;
   }
-}
-
-export interface UploadDataArgs {
-  filename: string;
-  data_base64: string;
-  target_note?: string;
-  subfolder?: string;
-  content_type?: string;
-  overwrite?: boolean;
-  dest_path?: string;
-}
-
-export async function uploadAttachmentData(
-  c: R2Client,
-  cfg: VaultConfig,
-  args: UploadDataArgs,
-): Promise<ToolResult<UploadResult>> {
-  const decoded = decodeUpload(args.data_base64);
-  if (!decoded) return err("invalid_base64");
-  // An explicit content_type wins; otherwise a data-URL MIME hint; otherwise the
-  // extension-derived MIME inside finalizeUpload.
-  const contentTypeHint = args.content_type ?? decoded.mimeHint;
-  return finalizeUpload(c, cfg, args, args.filename, decoded.bytes, contentTypeHint);
 }
 
 export interface UploadUrlArgs {

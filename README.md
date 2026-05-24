@@ -62,7 +62,6 @@ Obsidian (Mac / iOS / iPad)
 | `get_or_create_daily_note(date?)` | Create or fetch today's (or a given date's) daily note |
 | `append_to_daily_note(date?, content)` | Append a line to today's (or a given date's) daily note |
 | `backfill_ids(dryRun?, limit?, prefix?)` | Scan the vault and mint a nanoid `id:` for any note missing one. Default `dryRun: true`. Returns counts plus up to 10 example writes. Safe to re-run; existing ids (any scheme) are skipped |
-| `upload_attachment_data(filename, data_base64, target_note?, subfolder?, content_type?, overwrite?, dest_path?)` | Store a binary attachment from base64 (raw or a `data:…;base64,…` URL). Returns JSON `{path, embed_markdown, permalink, etag, size, content_type}`. Failures: `invalid_base64`, `too_large`, `disallowed_extension`, `invalid_filename`, `invalid_path`, `exists` |
 | `upload_attachment_url(source_url, filename?, target_note?, subfolder?, overwrite?, dest_path?)` | Fetch an HTTPS asset server-side and store it. SSRF-guarded (HTTPS only, no IP-literal/loopback hosts, validated across redirects), size-capped, HTML rejected. Same return shape. Failures: `invalid_url`, `insecure_url`, `disallowed_host`, `too_many_redirects`, `fetch_failed`, `html_response`, `too_large`, `no_extension_inferable`, `disallowed_extension`, `exists` |
 | `read_attachment(path)` | Read an attachment. Image types return an MCP `image` content block + JSON metadata; non-image types return one JSON block with the base64 in `data_base64`. Only allowlisted extensions. Failures: `not_found`, `disallowed_extension` |
 | `head_attachment(path)` | Metadata only — JSON `{path, size, content_type, etag, uploaded}`. Use to check `size` before a `read_attachment`. Failure: `not_found` |
@@ -168,7 +167,7 @@ The initial seed on a cold DO is still O(N) — one R2 GET per note in the vault
 
 Six tools (added in the unreleased line after 0.7.0) expose the vault's binary files — images, PDFs, and other configured types — which Remotely Save already syncs into R2 alongside the markdown. This lets Claude ingest a pasted screenshot, pull a referenced asset from a URL, and read back an embedded image or PDF.
 
-**Tools:** `upload_attachment_data`, `upload_attachment_url`, `read_attachment`, `head_attachment`, `list_attachments`, `delete_attachment` (see the [tool table](#tools-exposed)). Uploads return a ready-to-paste `embed_markdown` (e.g. `![[files/diagram.png]]`); compose one extra `patch_note` to display it in a note. Markdown tools are unchanged — `R2Client.get/put/delete` stay `.md`-only; the binary path uses separate `putBinary/getBinary/headBinary/listBinaries` methods.
+**Tools:** `create_upload_link`, `upload_attachment_url`, `read_attachment`, `head_attachment`, `list_attachments`, `move_attachment`, `delete_attachment` (see the [tool table](#tools-exposed)). Uploads return a ready-to-paste `embed_markdown` (e.g. `![[files/diagram.png]]`); compose one extra `patch_note` to display it in a note. There is deliberately **no inline-base64 upload tool** — see [below](#uploading-large-images--mobile-photos-direct-upload-endpoint) for why. Markdown tools are unchanged — `R2Client.get/put/delete` stay `.md`-only; the binary path uses separate `putBinary/getBinary/headBinary/listBinaries` methods.
 
 ### Where uploads land (`ATTACHMENTS_PATH_MODE`)
 
@@ -209,7 +208,7 @@ Caveat (same R2-has-no-transactions reality as the note rollback): attachment by
 
 ## Uploading large images / mobile photos (direct upload endpoint)
 
-`upload_attachment_data` only works for small files. An MCP tool call carries its arguments as model-generated JSON, and Anthropic's clients cap that payload at a few hundred KB — so a real photo's base64 can't be transmitted (the desktop app shows "Couldn't send tool approval"; mobile hangs). There is no binary input channel for MCP tools, and a user-uploaded image reaches the model only as *vision* (it can't faithfully reproduce the bytes), so chunking the tool call wouldn't help either. The robust pattern is to move the bytes **out of band**: the Worker exposes an authenticated HTTP upload endpoint the user hits directly from a browser, and Claude just embeds the resulting path.
+There is intentionally **no inline-base64 upload tool**. A tool call carries its arguments as the *model's own output tokens*, so a base64 payload more than a few KB exhausts the model's per-turn output budget and the call truncates mid-stream — the desktop app shows "Couldn't send tool approval" and mobile just hangs. (It's not a transport or tool limit; the chokepoint is the model emitting the parameter.) There's also no binary input channel for MCP tools, and a user-uploaded image reaches the model only as *vision* (it can't faithfully reproduce the bytes), so chunking wouldn't help either. The robust pattern is to move the bytes **out of band**: the Worker exposes an authenticated HTTP upload endpoint the user hits directly from a browser, and Claude just embeds the resulting path.
 
 ### Three ways to upload
 
@@ -219,7 +218,7 @@ Caveat (same R2-has-no-transactions reality as the note rollback): attachment by
 2. **Bookmarked web page.** Open `https://<your-host>/upload` in any browser (iOS Safari or desktop). Enter your `UPLOAD_TOKEN` once (saved in the browser); thereafter it's a one-tap uploader. iOS offers Camera / Photo Library directly from the file picker.
 3. **iOS Shortcut (share sheet).** A one-action Shortcut → from Photos, Share → upload in two taps. Recipe below.
 
-All three POST to the same `POST /upload` endpoint. **You don't upload twice:** once the file is in the vault, Claude reads it back for OCR/text extraction with `read_attachment` (which returns the image to Claude's vision — a tool *result*, not subject to the outbound tool-call size cap that blocks `upload_attachment_data`). So the loop is: tap the link and upload → tell Claude "done" (or it polls the known path) → Claude reads the image, extracts text, writes the note, embeds the path. Bytes go user→Worker; vision/authoring stays Claude→MCP.
+All three POST to the same `POST /upload` endpoint. **You don't upload twice:** once the file is in the vault, Claude reads it back for OCR/text extraction with `read_attachment` (which returns the image to Claude's vision — a tool *result*, not subject to the output-token budget that makes inline upload impossible). So the loop is: tap the link and upload → tell Claude "done" (or it polls the known path) → Claude reads the image, extracts text, writes the note, embeds the path. Bytes go user→Worker; vision/authoring stays Claude→MCP.
 
 If Claude didn't know the destination note at upload time, it can upload to a guess/holding folder and relocate later with `move_attachment` (server-side, no re-upload) before embedding.
 
