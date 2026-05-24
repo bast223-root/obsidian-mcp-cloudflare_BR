@@ -2,8 +2,9 @@ import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { R2Client } from "../src/vault/r2-client";
 import { type NoteRow, type Store, VaultIndex } from "../src/vault/index-store";
+import { makeCfg } from "./_helpers";
 
-const cfg = { prefix: "", dailyNotePathTemplate: "Daily Notes/{{YYYY-MM-DD}}.md", permalinkBaseUrl: "" };
+const cfg = makeCfg();
 
 async function reset() {
   const list = await env.VAULT.list();

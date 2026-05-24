@@ -62,6 +62,12 @@ Obsidian (Mac / iOS / iPad)
 | `get_or_create_daily_note(date?)` | Create or fetch today's (or a given date's) daily note |
 | `append_to_daily_note(date?, content)` | Append a line to today's (or a given date's) daily note |
 | `backfill_ids(dryRun?, limit?, prefix?)` | Scan the vault and mint a nanoid `id:` for any note missing one. Default `dryRun: true`. Returns counts plus up to 10 example writes. Safe to re-run; existing ids (any scheme) are skipped |
+| `upload_attachment_data(filename, data_base64, target_note?, subfolder?, content_type?, overwrite?, dest_path?)` | Store a binary attachment from base64 (raw or a `data:…;base64,…` URL). Returns JSON `{path, embed_markdown, permalink, etag, size, content_type}`. Failures: `invalid_base64`, `too_large`, `disallowed_extension`, `invalid_filename`, `invalid_path`, `exists` |
+| `upload_attachment_url(source_url, filename?, target_note?, subfolder?, overwrite?, dest_path?)` | Fetch an HTTPS asset server-side and store it. SSRF-guarded (HTTPS only, no IP-literal/loopback hosts, validated across redirects), size-capped, HTML rejected. Same return shape. Failures: `invalid_url`, `insecure_url`, `disallowed_host`, `too_many_redirects`, `fetch_failed`, `html_response`, `too_large`, `no_extension_inferable`, `disallowed_extension`, `exists` |
+| `read_attachment(path)` | Read an attachment. Image types return an MCP `image` content block + JSON metadata; non-image types return one JSON block with the base64 in `data_base64`. Only allowlisted extensions. Failures: `not_found`, `disallowed_extension` |
+| `head_attachment(path)` | Metadata only — JSON `{path, size, content_type, etag, uploaded}`. Use to check `size` before a `read_attachment`. Failure: `not_found` |
+| `list_attachments(prefix?, limit?, cursor?)` | List non-`.md` objects. Returns JSON `{items, cursor}`; `cursor` paginates. Empty `prefix` lists the whole vault |
+| `delete_attachment(path)` | Delete an attachment. Idempotent. Only allowlisted extensions (so a note can't be deleted via this tool). Failure: `disallowed_extension` |
 
 Tool failures use the MCP `isError: true` convention with a JSON-encoded body of the shape `{ ok: false, reason, ...context }`. Failures are not thrown as JSON-RPC errors, so they do not count as Durable Object RPC errors at the Cloudflare layer.
 
@@ -156,9 +162,48 @@ The initial seed on a cold DO is still O(N) — one R2 GET per note in the vault
 
 `create_note`, `replace_note`, `replace_body`, and `append_to_daily_note` perform a head-or-read followed by a put without any concurrency guard. In single-user MCP usage this is dormant — there's only ever one writer — but if two MCP clients ran concurrently, both could observe "no existing note", both could put, and the last write would silently win. Tracked for a future fix using R2 conditional writes (`onlyIf: { etagMatches }`).
 
-### Attachments are not exposed
+## Attachments
 
-Tools operate only on `.md` files. PDFs, images, and audio files are stored in R2 by Remotely Save but are not exposed through any MCP tool.
+Six tools (added in the unreleased line after 0.7.0) expose the vault's binary files — images, PDFs, and other configured types — which Remotely Save already syncs into R2 alongside the markdown. This lets Claude ingest a pasted screenshot, pull a referenced asset from a URL, and read back an embedded image or PDF.
+
+**Tools:** `upload_attachment_data`, `upload_attachment_url`, `read_attachment`, `head_attachment`, `list_attachments`, `delete_attachment` (see the [tool table](#tools-exposed)). Uploads return a ready-to-paste `embed_markdown` (e.g. `![[files/diagram.png]]`); compose one extra `patch_note` to display it in a note. Markdown tools are unchanged — `R2Client.get/put/delete` stay `.md`-only; the binary path uses separate `putBinary/getBinary/headBinary/listBinaries` methods.
+
+### Where uploads land (`ATTACHMENTS_PATH_MODE`)
+
+| Mode | Resulting path | Notes |
+|------|----------------|-------|
+| `per_note_subfolder` (default) | `<target_note's folder>/<ATTACHMENTS_SUBFOLDER>/<file>` | Matches Obsidian's per-note attachment convention. Falls back to `<subfolder>/<file>` at the vault root when no `target_note` is given. |
+| `vault_default` | `<ATTACHMENTS_SUBFOLDER>/<file>` | Vault-rooted; `target_note` is ignored. |
+| `caller_specified` | `<subfolder arg>/<file>` | The AI supplies the folder via the `subfolder` argument; `ATTACHMENTS_SUBFOLDER` is ignored. |
+
+A `dest_path` argument overrides the policy entirely (still path-safety validated). Filenames are sanitized (directory components, control chars, and leading dots stripped) before use.
+
+### Configuration (wrangler vars)
+
+All have safe defaults baked into `wrangler.example.jsonc`; edit there (then `npm run setup`) to tune.
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `ATTACHMENTS_PATH_MODE` | `per_note_subfolder` | Path policy (table above). |
+| `ATTACHMENTS_SUBFOLDER` | `files` | Subfolder name used by the first two modes. |
+| `ATTACHMENT_ALLOWED_EXTENSIONS` | `png,jpg,jpeg,gif,webp,svg,pdf` | CSV allowlist (lowercase). Enforced on upload, read, and delete. Broaden, e.g. `…,docx,xlsx,pptx,txt,csv`. |
+| `ATTACHMENT_MAX_BYTES` | `26214400` (25 MiB) | Upload size cap (post-decode and on URL fetch). |
+| `ATTACHMENTS_MOVE_WITH_NOTE` | `unique_refs` | `unique_refs`: `move_note` co-moves attachments uniquely embedded by the note. `never`: leave them. |
+| `ATTACHMENT_URL_TIMEOUT_MS` | `20000` | Timeout for `upload_attachment_url`. |
+
+### `read_attachment` returns base64 for non-images
+
+Images come back as a renderable MCP `image` block. Everything else (PDFs, office docs) is returned as base64 inside a JSON block, which can be large — call `head_attachment` first to check `size` on uncertain files.
+
+### `move_note` co-moves uniquely-owned attachments
+
+When `ATTACHMENTS_MOVE_WITH_NOTE=unique_refs`, moving a note also relocates attachments that (a) are allowlisted, (b) live nested under the note's own folder, and (c) are referenced by no other note (checked via the existing `vault_wikilinks` index — no full-vault scan). Each attachment's bytes are re-rooted under the destination folder, preserving subfolder structure, and the note's embed is rewritten only when its relative form actually changes. The byte move runs before the note commit, so a skipped/failed attachment move leaves its embed pointing at the still-present original (no broken link). `move_note`'s response gains an `attachments_moved: [{from, to}]` field.
+
+Caveat (same R2-has-no-transactions reality as the note rollback): attachment byte-moves are **not** reversed if the subsequent note commit fails and rolls back. In that rare case the bytes sit at the new location while the restored note still references the old one. Single-user MCP usage rarely hits the rollback path at all.
+
+### URL-fetch security model
+
+`upload_attachment_url` is HTTPS-only and rejects IP-literal, `localhost`, `*.local`, and `*.internal` hosts. Redirects are followed manually (cap 5 hops) with the same host/protocol check re-run on every hop, so the SSRF guard covers the whole chain — not just the initial URL. HTML responses and bodies exceeding `ATTACHMENT_MAX_BYTES` (by `Content-Length` or actual size) are refused. Prefer direct asset URLs (`.png`/`.pdf`/…) over web pages.
 
 ## Gotchas
 

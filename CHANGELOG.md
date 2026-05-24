@@ -7,9 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — attachment support
+
+- Six new tools expose the vault's binary files (images, PDFs, configurable types) that Remotely Save already syncs into R2:
+  - `upload_attachment_data` — store from base64 (raw or `data:` URL) with a path policy that matches Obsidian's per-note `files/` convention; returns ready-to-paste `embed_markdown`.
+  - `upload_attachment_url` — fetch an HTTPS asset server-side, SSRF-guarded (HTTPS only, no IP-literal/loopback hosts, re-validated across redirects), size-capped, HTML rejected.
+  - `read_attachment` — returns an MCP `image` content block for images, base64-in-JSON for other types.
+  - `head_attachment` — metadata only (size/type/etag/uploaded) to check size before reading.
+  - `list_attachments` — paginated listing of non-`.md` objects, optional `prefix` scope.
+  - `delete_attachment` — idempotent; allowlist-guarded so it can't remove a note.
+- New wrangler vars with safe defaults: `ATTACHMENTS_PATH_MODE`, `ATTACHMENTS_SUBFOLDER`, `ATTACHMENT_ALLOWED_EXTENSIONS`, `ATTACHMENT_MAX_BYTES`, `ATTACHMENTS_MOVE_WITH_NOTE`, `ATTACHMENT_URL_TIMEOUT_MS`.
+- `R2Client` gains binary methods (`putBinary`, `getBinary`, `headBinary`, `listBinaries`) and an `ObjectExistsError` for non-clobber writes; the text `get`/`put`/`delete` stay `.md`-only.
+- Pure helper module `src/vault/attachments.ts` (MIME/extension tables, filename sanitization, path-policy resolution, embed-markdown construction, SSRF host check) and tool module `src/mcp/tools/attachments.ts`.
+
+### Changed
+
+- `move_note` now optionally co-moves attachments uniquely embedded by the moving note (controlled by `ATTACHMENTS_MOVE_WITH_NOTE`, default `unique_refs`), rewriting embeds only when their relative form changes. Its response gains an `attachments_moved` array. Behavior is unchanged when a note embeds no allowlisted attachments.
+
 ### Documentation
 
 - README now links to the [announcement blog post](https://dszp.dev/2026/05/23/two-workers-for-obsidian-and-claude-ai/) covering the motivation and design of both Workers.
+- New "Attachments" section in README documenting the tools, path modes, config vars, co-move behavior, and the URL-fetch security model.
 
 ## [0.8.0] - 2026-05-23
 

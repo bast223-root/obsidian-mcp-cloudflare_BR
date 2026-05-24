@@ -8,6 +8,7 @@ import {
   extractWikilinks,
   generateNoteId,
   parseNote,
+  rewriteEmbedTargetForMove,
   rewriteWikilinksForMove,
   splitFrontmatterRaw,
 } from "../src/vault/markdown";
@@ -162,6 +163,35 @@ describe("rewriteWikilinksForMove", () => {
     const out = rewriteWikilinksForMove("[[older]] [[old]]", from, to);
     expect(out.content).toBe("[[older]] [[OtherFolder/new]]");
     expect(out.count).toBe(1);
+  });
+});
+
+describe("rewriteEmbedTargetForMove", () => {
+  it("rewrites an embed target exactly, preserving the ! marker", () => {
+    const out = rewriteEmbedTargetForMove(
+      "before ![[Projects/files/img.png]] after",
+      "Projects/files/img.png",
+      "files/img.png",
+    );
+    expect(out.changed).toBe(true);
+    expect(out.content).toBe("before ![[files/img.png]] after");
+    expect(out.count).toBe(1);
+  });
+
+  it("preserves alias and heading suffixes", () => {
+    const out = rewriteEmbedTargetForMove("![[old/p.pdf|Spec#Intro]]", "old/p.pdf", "p.pdf");
+    expect(out.content).toBe("![[p.pdf|Spec#Intro]]");
+  });
+
+  it("is a no-op when the target is unchanged", () => {
+    const out = rewriteEmbedTargetForMove("![[files/img.png]]", "files/img.png", "files/img.png");
+    expect(out.changed).toBe(false);
+    expect(out.count).toBe(0);
+  });
+
+  it("does not match a different target or a code span", () => {
+    const out = rewriteEmbedTargetForMove("`![[a.png]]` ![[b.png]]", "a.png", "x/a.png");
+    expect(out.changed).toBe(false);
   });
 });
 

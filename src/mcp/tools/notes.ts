@@ -1,16 +1,29 @@
 import type { R2Client } from "../../vault/r2-client";
 import { type ToolResult, type VaultConfig, err, ok } from "../../types";
 import type { VaultIndex } from "../../vault/index-store";
+import { log } from "../../log";
 import {
   MalformedFrontmatterError,
   buildPermalink,
   ensureIdInFrontmatter,
   extractIdFromFrontmatter,
+  extractWikilinks,
   generateNoteId,
+  rewriteEmbedTargetForMove,
   rewriteWikilinksForMove,
   setIdInFrontmatter,
   splitFrontmatterRaw,
 } from "../../vault/markdown";
+import {
+  DEFAULT_ATTACHMENT_EXTENSIONS,
+  attachmentResolutionCandidates,
+  dirOf,
+  getExtension,
+  isUnderDir,
+  joinPath,
+  parseExtensionAllowlist,
+  relativeForEmbed,
+} from "../../vault/attachments";
 
 export async function listNotes(c: R2Client, _cfg: VaultConfig): Promise<string[]> {
   return c.listMarkdown();
@@ -118,11 +131,12 @@ export interface MoveNoteSuccess {
   links_updated: number;
   notes_modified: { path: string; etag: string; content: string }[];
   moved: { path: string; etag: string; content: string };
+  attachments_moved: { from: string; to: string }[];
 }
 
 export async function moveNote(
   c: R2Client,
-  _cfg: VaultConfig,
+  cfg: VaultConfig,
   index: VaultIndex,
   args: { from_path: string; to_path: string },
 ): Promise<ToolResult<MoveNoteSuccess>> {
@@ -147,9 +161,21 @@ export async function moveNote(
     }
   }
 
-  // Rewrite self-references inside the moved file.
+  // Co-move attachments uniquely embedded by this note (opt-in). Bytes are moved
+  // BEFORE the note commit; an embed is only rewritten for an attachment whose
+  // byte-move succeeded, so a skipped move leaves the embed pointing at the
+  // still-present original (no broken link). The note commit below is the last,
+  // best-effort-atomic step.
+  const attachments_moved = await comoveAttachments(c, cfg, index, from, to, sourceBody);
+
+  // Rewrite self-references inside the moved file (.md wikilinks) and any
+  // attachment embeds whose target changed after the co-move.
   const movedRewrite = rewriteWikilinksForMove(sourceBody, from, to);
-  const movedContent = movedRewrite.changed ? movedRewrite.content : sourceBody;
+  let movedContent = movedRewrite.changed ? movedRewrite.content : sourceBody;
+  for (const a of attachments_moved) {
+    const newTarget = relativeForEmbed(a.to, to);
+    movedContent = rewriteEmbedTargetForMove(movedContent, a.oldTarget, newTarget).content;
+  }
 
   // Commit with best-effort rollback. R2 has no transactional API, so a crash
   // after some writes have landed will leave partial state — we track every
@@ -178,6 +204,7 @@ export async function moveNote(
       links_updated,
       notes_modified,
       moved: { path: to, etag: movedEtag, content: movedContent },
+      attachments_moved: attachments_moved.map((a) => ({ from: a.from, to: a.to })),
     });
   } catch (e) {
     for (let i = written.length - 1; i >= 0; i--) {
@@ -194,6 +221,86 @@ export async function moveNote(
     }
     throw e;
   }
+}
+
+interface ComovedAttachment {
+  from: string;
+  to: string;
+  /** The exact embed target text in the source note, for the body rewrite. */
+  oldTarget: string;
+}
+
+/**
+ * Find attachments uniquely embedded by the moving note and relocate their bytes
+ * under the destination note's folder. Bounded: only the moving note's body is
+ * scanned for candidate targets; each candidate costs a few `headBinary` calls
+ * plus one `findReferrersFor` index query. Honors `ATTACHMENTS_MOVE_WITH_NOTE`.
+ * Constraints that keep it safe:
+ *   - only allowlisted (non-`.md`) targets,
+ *   - only attachments nested under the from-note's folder (re-rooted under the
+ *     to-note's folder, preserving any subfolder structure),
+ *   - only attachments referenced by no other note (uniquely owned),
+ *   - per-attachment errors are logged and skipped, never failing the move.
+ */
+async function comoveAttachments(
+  c: R2Client,
+  cfg: VaultConfig,
+  index: VaultIndex,
+  from: string,
+  to: string,
+  sourceBody: string,
+): Promise<ComovedAttachment[]> {
+  if (cfg.attachmentsMoveWithNote === "never") return [];
+  const allow = parseExtensionAllowlist(
+    cfg.attachmentAllowedExtensions.trim()
+      ? cfg.attachmentAllowedExtensions
+      : DEFAULT_ATTACHMENT_EXTENSIONS,
+  );
+  const fromDir = dirOf(from);
+  const toDir = dirOf(to);
+  const moved: ComovedAttachment[] = [];
+  const seen = new Set<string>();
+
+  for (const target of extractWikilinks(sourceBody)) {
+    if (seen.has(target)) continue;
+    seen.add(target);
+    const ext = getExtension(target);
+    if (!ext || !allow.has(ext)) continue; // notes & non-allowlisted targets
+
+    // Resolve the embed target to a real object (first existing candidate wins).
+    let realOld: string | null = null;
+    for (const cand of attachmentResolutionCandidates(target, fromDir, cfg.attachmentsSubfolder)) {
+      if (await c.headBinary(cand)) {
+        realOld = cand;
+        break;
+      }
+    }
+    if (!realOld) continue;
+    if (!isUnderDir(realOld, fromDir)) continue; // only co-move nested attachments
+
+    // Uniquely owned? Any other referring note means leave it in place.
+    const referrers = await index.findReferrersFor(realOld);
+    if (referrers.some((p) => p !== from)) continue;
+
+    const rel = fromDir ? realOld.slice(fromDir.length + 1) : realOld;
+    const newPath = joinPath(toDir, rel);
+    if (newPath === realOld) continue; // root-to-root rename; nothing to move
+
+    try {
+      const obj = await c.getBinary(realOld);
+      if (!obj) continue;
+      await c.putBinary(newPath, obj.body, obj.contentType, { onlyIfNotExists: true });
+      await c.delete(realOld);
+      moved.push({ from: realOld, to: newPath, oldTarget: target });
+    } catch (e) {
+      log.warn("attachment_comove_skipped", {
+        from: realOld,
+        to: newPath,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+  return moved;
 }
 
 export async function patchNote(

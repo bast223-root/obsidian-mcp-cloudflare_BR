@@ -1,8 +1,9 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it, beforeEach } from "vitest";
 import { R2Client } from "../src/vault/r2-client";
+import { makeCfg } from "./_helpers";
 
-const cfg = { prefix: "", dailyNotePathTemplate: "", permalinkBaseUrl: "" };
+const cfg = makeCfg();
 
 async function reset() {
   const list = await env.VAULT.list();
@@ -36,7 +37,7 @@ describe("R2Client", () => {
   });
 
   it("respects a non-empty VAULT_PREFIX", async () => {
-    const c = new R2Client(env.VAULT, { prefix: "vaults/main", dailyNotePathTemplate: "", permalinkBaseUrl: "" });
+    const c = new R2Client(env.VAULT, makeCfg({ prefix: "vaults/main" }));
     await c.put("note.md", "hi");
     const raw = await env.VAULT.get("vaults/main/note.md");
     expect(raw).not.toBeNull();

@@ -11,10 +11,23 @@ export interface Props extends Record<string, unknown> {
   user: string;
 }
 
+export type AttachmentsPathMode = "per_note_subfolder" | "vault_default" | "caller_specified";
+export type AttachmentsMoveWithNote = "unique_refs" | "never";
+
 export interface VaultConfig {
   prefix: string;
   dailyNotePathTemplate: string;
   permalinkBaseUrl: string;
+  // Attachment handling (see wrangler vars ATTACHMENTS_*/ATTACHMENT_*).
+  attachmentsPathMode: AttachmentsPathMode;
+  attachmentsSubfolder: string;
+  /** CSV of allowed extensions (lowercase). Empty falls back to the built-in default list. */
+  attachmentAllowedExtensions: string;
+  /** Hard cap on upload size in bytes (post-decode / fetched body). */
+  attachmentMaxBytes: number;
+  attachmentsMoveWithNote: AttachmentsMoveWithNote;
+  /** Timeout for the URL-fetch upload path, in milliseconds. */
+  attachmentUrlTimeoutMs: number;
 }
 
 export type ToolOk<T> = { ok: true; value: T };

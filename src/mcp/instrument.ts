@@ -1,12 +1,21 @@
 import { log } from "../log";
 
+// Tools normally return text blocks. `read_attachment` is the lone exception:
+// it emits an `image` block for image MIME types so MCP clients render the
+// bytes inline. Errors are always text (see `errResponse`), so the failure-path
+// helpers below only ever inspect text content.
+export type McpContent =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+
 export type McpResponse = {
-  content: { type: "text"; text: string }[];
+  content: McpContent[];
   isError?: boolean;
 };
 
 export function extractFailureFields(res: McpResponse): Record<string, unknown> {
-  const text = res.content[0]?.text;
+  const first = res.content[0];
+  const text = first && first.type === "text" ? first.text : undefined;
   if (!text) return {};
   try {
     const parsed = JSON.parse(text);

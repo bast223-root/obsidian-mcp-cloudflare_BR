@@ -1,16 +1,71 @@
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { Props, ToolResult, VaultConfig } from "../types";
+import type {
+  AttachmentsMoveWithNote,
+  AttachmentsPathMode,
+  Props,
+  ToolResult,
+  VaultConfig,
+} from "../types";
 import { R2Client } from "../vault/r2-client";
 import { SqlStore, VaultIndex } from "../vault/index-store";
 import { listNotes, readNote, createNote, replaceNote, replaceBody, deleteNote, patchNote, moveNote } from "./tools/notes";
 import { generatePermalink, parseFrontmatter } from "./tools/metadata";
 import { getOrCreateDailyNote, appendToDailyNote } from "./tools/daily";
 import { backfillIds } from "./tools/admin";
-import { type McpResponse, errResponse, instrument } from "./instrument";
+import {
+  deleteAttachment,
+  headAttachment,
+  listAttachments,
+  readAttachment,
+  uploadAttachmentData,
+  uploadAttachmentUrl,
+} from "./tools/attachments";
+import { type McpContent, type McpResponse, errResponse, instrument } from "./instrument";
 
 const NotePath = z.string().min(1).regex(/\.md$/i, "path must end with .md");
+
+// Attachment paths accept any extension (the per-tool extension allowlist gives
+// a richer error). This schema mirrors the R2Client.toKey safety check at the
+// Zod layer so clients get a clean validation error: no `..`, no leading `/`,
+// no backslash, no control characters.
+const AttachmentPath = z
+  .string()
+  .min(1)
+  .max(1024)
+  .regex(/^[^/\\][^\\]*$/, "must be a vault-relative path (no leading / or \\)")
+  .refine((p) => !p.includes("..") && !hasControlChar(p), "invalid path");
+
+/** True if the string contains an ASCII control character (0x00-0x1f) or DEL. */
+function hasControlChar(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x20 || c === 0x7f) return true;
+  }
+  return false;
+}
+
+const PATH_MODES: AttachmentsPathMode[] = [
+  "per_note_subfolder",
+  "vault_default",
+  "caller_specified",
+];
+
+function parsePathMode(v: string | undefined): AttachmentsPathMode {
+  return (PATH_MODES as string[]).includes(v ?? "")
+    ? (v as AttachmentsPathMode)
+    : "per_note_subfolder";
+}
+
+function parseMoveWithNote(v: string | undefined): AttachmentsMoveWithNote {
+  return v === "never" ? "never" : "unique_refs";
+}
+
+function parsePositiveInt(v: unknown, fallback: number): number {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
 
 function okText(text: string): McpResponse {
   return { content: [{ type: "text", text }] };
@@ -40,6 +95,19 @@ function fromToolResultBlocks<T>(
   return errResponse(reason, rest);
 }
 
+// Mixed-block variant — used by read_attachment, which returns an `image`
+// content block for image MIME types (so the client renders the bytes inline)
+// followed by a JSON metadata text block. Failures still serialize to a single
+// text block via errResponse.
+function fromToolResultMixedBlocks<T>(
+  r: ToolResult<T>,
+  render: (value: T) => McpContent[],
+): McpResponse {
+  if (r.ok) return { content: render(r.value) };
+  const { ok: _ok, reason, ...rest } = r;
+  return errResponse(reason, rest);
+}
+
 export class ObsidianMCP extends McpAgent<Env, never, Props> {
   server = new McpServer({ name: "obsidian-vault", version: "0.7.0" });
   private _index?: VaultIndex;
@@ -53,6 +121,12 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
       prefix: this.env.VAULT_PREFIX,
       dailyNotePathTemplate: this.env.DAILY_NOTE_PATH_TEMPLATE,
       permalinkBaseUrl: this.env.PERMALINK_BASE_URL ?? "",
+      attachmentsPathMode: parsePathMode(this.env.ATTACHMENTS_PATH_MODE),
+      attachmentsSubfolder: this.env.ATTACHMENTS_SUBFOLDER || "files",
+      attachmentAllowedExtensions: this.env.ATTACHMENT_ALLOWED_EXTENSIONS ?? "",
+      attachmentMaxBytes: parsePositiveInt(this.env.ATTACHMENT_MAX_BYTES, 26214400),
+      attachmentsMoveWithNote: parseMoveWithNote(this.env.ATTACHMENTS_MOVE_WITH_NOTE),
+      attachmentUrlTimeoutMs: parsePositiveInt(this.env.ATTACHMENT_URL_TIMEOUT_MS, 20000),
     };
   }
 
@@ -189,6 +263,7 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
               to: v.to,
               links_updated: v.links_updated,
               notes_modified: v.notes_modified.map((n) => n.path),
+              attachments_moved: v.attachments_moved,
             }),
           );
         }),
@@ -288,6 +363,118 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
           });
           return fromToolResult(r, (v) => JSON.stringify(v));
         }),
+    );
+
+    this.server.tool(
+      "upload_attachment_data",
+      "Upload a binary attachment (image, PDF, …) into the vault from base64 data — e.g. a screenshot or pasted image. Accepts a raw base64 string or a `data:<mime>;base64,…` data URL in `data_base64`. Path policy: by default the file lands in a `files/` subfolder of `target_note`'s folder (pass `target_note` to anchor it); `subfolder` overrides the folder name and `dest_path` overrides the whole path. Returns JSON `{path, embed_markdown, permalink, etag, size, content_type}` — paste `embed_markdown` into a note via patch_note to display it. Fails with reason='invalid_base64', 'too_large' (exceeds ATTACHMENT_MAX_BYTES), 'disallowed_extension' (not in the allowlist; the response lists allowed extensions), 'invalid_filename'/'invalid_path', or 'exists' (set overwrite=true to replace).",
+      {
+        filename: z.string().min(1),
+        data_base64: z.string().min(1),
+        target_note: NotePath.optional(),
+        subfolder: z.string().optional(),
+        content_type: z.string().optional(),
+        overwrite: z.boolean().optional(),
+        dest_path: AttachmentPath.optional(),
+      },
+      async (args) =>
+        instrument("upload_attachment_data", async () =>
+          fromToolResult(await uploadAttachmentData(this.vault, this.cfg, args), (v) =>
+            JSON.stringify(v),
+          ),
+        ),
+    );
+
+    this.server.tool(
+      "upload_attachment_url",
+      "Fetch an asset from an HTTPS URL server-side and store it as a vault attachment. Prefer a direct asset URL (ending in .png/.jpg/.pdf/…) over a web page — HTML responses are rejected. Security: HTTPS only, no IP-literal or localhost hosts, validated across redirects, with a size cap (ATTACHMENT_MAX_BYTES) and fetch timeout. If `filename` is omitted it is taken from the URL, else synthesized from the response Content-Type. Same path policy and return shape as upload_attachment_data. Fails with reason='invalid_url', 'insecure_url' (not https), 'disallowed_host', 'too_many_redirects', 'fetch_failed', 'html_response', 'too_large', 'no_extension_inferable', 'disallowed_extension', or 'exists'.",
+      {
+        source_url: z.string().min(1),
+        filename: z.string().optional(),
+        target_note: NotePath.optional(),
+        subfolder: z.string().optional(),
+        overwrite: z.boolean().optional(),
+        dest_path: AttachmentPath.optional(),
+      },
+      async (args) =>
+        instrument("upload_attachment_url", async () =>
+          fromToolResult(await uploadAttachmentUrl(this.vault, this.cfg, args), (v) =>
+            JSON.stringify(v),
+          ),
+        ),
+    );
+
+    this.server.tool(
+      "read_attachment",
+      "Read a binary attachment back from the vault. For image types the bytes are returned as an MCP image content block (renderable inline) followed by a JSON metadata block. For non-image types (e.g. PDF) the response is a single JSON block containing the base64 bytes in `data_base64` — this can be large, so call head_attachment first to check `size` on uncertain files. Only allowlisted extensions are readable. Fails with reason='not_found' or 'disallowed_extension'.",
+      { path: AttachmentPath },
+      async ({ path }) =>
+        instrument("read_attachment", async () =>
+          fromToolResultMixedBlocks(await readAttachment(this.vault, this.cfg, { path }), (v) => {
+            if (v.is_image) {
+              return [
+                { type: "image", data: v.data_base64, mimeType: v.content_type },
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    path: v.path,
+                    size: v.size,
+                    content_type: v.content_type,
+                    etag: v.etag,
+                  }),
+                },
+              ];
+            }
+            return [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  path: v.path,
+                  size: v.size,
+                  content_type: v.content_type,
+                  etag: v.etag,
+                  data_base64: v.data_base64,
+                }),
+              },
+            ];
+          }),
+        ),
+    );
+
+    this.server.tool(
+      "head_attachment",
+      "Return metadata for an attachment without downloading its bytes — JSON `{path, size, content_type, etag, uploaded}`. Use to check `size` before a read_attachment on a potentially large file. Fails with reason='not_found'.",
+      { path: AttachmentPath },
+      async ({ path }) =>
+        instrument("head_attachment", async () =>
+          fromToolResult(await headAttachment(this.vault, this.cfg, { path }), (v) =>
+            JSON.stringify(v),
+          ),
+        ),
+    );
+
+    this.server.tool(
+      "list_attachments",
+      "List non-markdown attachments in the vault. Returns JSON `{items, cursor}` where each item is `{path, size, content_type, etag, uploaded}`. An empty `prefix` lists the whole vault's attachments; pass a `prefix` (e.g. 'Daily Notes/files/') to scope. `cursor` paginates (pass back the returned cursor; null means no more pages).",
+      {
+        prefix: z.string().optional(),
+        limit: z.number().int().positive().max(1000).optional(),
+        cursor: z.string().optional(),
+      },
+      async (args) =>
+        instrument("list_attachments", async () => okJson(await listAttachments(this.vault, this.cfg, args))),
+    );
+
+    this.server.tool(
+      "delete_attachment",
+      "Delete an attachment. Idempotent: succeeds even if the file does not exist. Only allowlisted extensions can be deleted (so a markdown note can't be removed through this tool). Returns JSON `{path, deleted}`. Fails with reason='disallowed_extension'.",
+      { path: AttachmentPath },
+      async ({ path }) =>
+        instrument("delete_attachment", async () =>
+          fromToolResult(await deleteAttachment(this.vault, this.cfg, { path }), (v) =>
+            JSON.stringify(v),
+          ),
+        ),
     );
   }
 }

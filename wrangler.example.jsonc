@@ -28,7 +28,24 @@
   "vars": {
     "VAULT_PREFIX": "${VAULT_PREFIX}",
     "DAILY_NOTE_PATH_TEMPLATE": "${DAILY_NOTE_PATH_TEMPLATE}",
-    "PERMALINK_BASE_URL": "${PERMALINK_BASE_URL}"
+    "PERMALINK_BASE_URL": "${PERMALINK_BASE_URL}",
+    // ─── Attachment handling (safe defaults; edit here to tune) ───────────
+    // Path policy for uploaded attachments:
+    //   per_note_subfolder — <note folder>/<ATTACHMENTS_SUBFOLDER>/<file> (Obsidian-style)
+    //   vault_default      — <ATTACHMENTS_SUBFOLDER>/<file> at the vault root
+    //   caller_specified   — the AI supplies the folder; ATTACHMENTS_SUBFOLDER ignored
+    "ATTACHMENTS_PATH_MODE": "per_note_subfolder",
+    "ATTACHMENTS_SUBFOLDER": "files",
+    // CSV of allowed extensions (lowercase). To broaden, e.g.:
+    // "png,jpg,jpeg,gif,webp,svg,pdf,docx,xlsx,pptx,txt,csv"
+    "ATTACHMENT_ALLOWED_EXTENSIONS": "png,jpg,jpeg,gif,webp,svg,pdf",
+    // Hard cap on upload size in bytes (post-decode / fetched body). 25 MiB.
+    "ATTACHMENT_MAX_BYTES": 26214400,
+    // unique_refs — move_note co-moves attachments uniquely embedded by the note.
+    // never       — move_note never touches attachments.
+    "ATTACHMENTS_MOVE_WITH_NOTE": "unique_refs",
+    // Timeout for the upload_attachment_url fetch path, in milliseconds.
+    "ATTACHMENT_URL_TIMEOUT_MS": 20000
   },
   "observability": { "enabled": true }
 }

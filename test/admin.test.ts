@@ -3,8 +3,9 @@ import { describe, expect, it, beforeEach } from "vitest";
 import { R2Client } from "../src/vault/r2-client";
 import { backfillIds } from "../src/mcp/tools/admin";
 import { extractIdFromFrontmatter } from "../src/vault/markdown";
+import { makeCfg } from "./_helpers";
 
-const cfg = { prefix: "", dailyNotePathTemplate: "Daily Notes/{{YYYY-MM-DD}}.md", permalinkBaseUrl: "" };
+const cfg = makeCfg();
 
 const NANOID_RE = /^[A-Za-z0-9_-]{21}$/;
 

@@ -15,15 +15,20 @@ import { generatePermalink, parseFrontmatter } from "../src/mcp/tools/metadata";
 import { getOrCreateDailyNote, appendToDailyNote } from "../src/mcp/tools/daily";
 import { type NoteRow, type Store, VaultIndex } from "../src/vault/index-store";
 import { extractIdFromFrontmatter, extractTags, extractWikilinks } from "../src/vault/markdown";
+import {
+  deleteAttachment,
+  headAttachment,
+  listAttachments,
+  readAttachment,
+  uploadAttachmentData,
+  uploadAttachmentUrl,
+} from "../src/mcp/tools/attachments";
+import { makeCfg } from "./_helpers";
 
 const NANOID_RE = /^[A-Za-z0-9_-]{21}$/;
 
-const cfg = { prefix: "", dailyNotePathTemplate: "Daily Notes/{{YYYY-MM-DD}}.md", permalinkBaseUrl: "" };
-const cfgWithPermalink = {
-  prefix: "",
-  dailyNotePathTemplate: "Daily Notes/{{YYYY-MM-DD}}.md",
-  permalinkBaseUrl: "https://o.example.test",
-};
+const cfg = makeCfg();
+const cfgWithPermalink = makeCfg({ permalinkBaseUrl: "https://o.example.test" });
 
 async function reset() {
   const list = await env.VAULT.list();
@@ -590,6 +595,93 @@ describe("moveNote", () => {
   });
 });
 
+describe("moveNote attachment co-move", () => {
+  beforeEach(reset);
+
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+  async function seedNote(c: R2Client, store: MemoryStore, path: string, body: string) {
+    const etag = await c.put(path, body);
+    store.upsert({ path, etag, body, tags: extractTags(body), wikilinks: extractWikilinks(body) });
+  }
+
+  it("co-moves a uniquely-embedded attachment and keeps the relative embed", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seedNote(c, store, "Projects/Plan.md", "see ![[files/img.png]]");
+    await c.putBinary("Projects/files/img.png", PNG, "image/png");
+
+    const r = await moveNote(c, cfg, index, {
+      from_path: "Projects/Plan.md",
+      to_path: "Archive/Plan.md",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.attachments_moved).toEqual([
+        { from: "Projects/files/img.png", to: "Archive/files/img.png" },
+      ]);
+      // Relative embed form is unchanged, so no rewrite was needed.
+      expect(r.value.moved.content).toBe("see ![[files/img.png]]");
+    }
+    expect(await c.getBinary("Projects/files/img.png")).toBeNull();
+    expect(await c.getBinary("Archive/files/img.png")).not.toBeNull();
+  });
+
+  it("rewrites a vault-rooted embed when the attachment co-moves", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seedNote(c, store, "Projects/Plan.md", "see ![[Projects/files/img.png]]");
+    await c.putBinary("Projects/files/img.png", PNG, "image/png");
+
+    const r = await moveNote(c, cfg, index, {
+      from_path: "Projects/Plan.md",
+      to_path: "Archive/Plan.md",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.attachments_moved).toEqual([
+        { from: "Projects/files/img.png", to: "Archive/files/img.png" },
+      ]);
+      expect(r.value.moved.content).toBe("see ![[files/img.png]]");
+    }
+    expect(await c.getBinary("Archive/files/img.png")).not.toBeNull();
+  });
+
+  it("leaves a shared attachment in place", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seedNote(c, store, "Projects/Plan.md", "![[files/img.png]]");
+    await seedNote(c, store, "Other.md", "also ![[Projects/files/img.png]]");
+    await c.putBinary("Projects/files/img.png", PNG, "image/png");
+
+    const r = await moveNote(c, cfg, index, {
+      from_path: "Projects/Plan.md",
+      to_path: "Archive/Plan.md",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.attachments_moved).toEqual([]);
+    // Attachment stays put because another note still references it.
+    expect(await c.getBinary("Projects/files/img.png")).not.toBeNull();
+    expect(await c.getBinary("Archive/files/img.png")).toBeNull();
+  });
+
+  it("never touches attachments when ATTACHMENTS_MOVE_WITH_NOTE=never", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const noMove = makeCfg({ attachmentsMoveWithNote: "never" });
+    const { store, index } = newIndex(c);
+    await seedNote(c, store, "Projects/Plan.md", "![[files/img.png]]");
+    await c.putBinary("Projects/files/img.png", PNG, "image/png");
+
+    const r = await moveNote(c, noMove, index, {
+      from_path: "Projects/Plan.md",
+      to_path: "Archive/Plan.md",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.attachments_moved).toEqual([]);
+    expect(await c.getBinary("Projects/files/img.png")).not.toBeNull();
+  });
+});
+
 describe("metadata tools", () => {
   beforeEach(reset);
 
@@ -770,5 +862,326 @@ describe("daily-note tools", () => {
     await appendToDailyNote(c, cfg, { date: "2026-05-11", content: "line2" });
     const body = await c.get("Daily Notes/2026-05-11.md");
     expect(body).toBe("line1\nline2\n");
+  });
+});
+
+describe("attachment tools", () => {
+  beforeEach(reset);
+
+  const PNG_BYTES = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  const PNG_B64 = btoa(String.fromCharCode(...PNG_BYTES));
+  const PDF_B64 = btoa("%PDF-1.4 fake");
+
+  it("uploadAttachmentData lands a PNG under the note's files/ subfolder", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentData(c, cfg, {
+      filename: "diagram.png",
+      data_base64: PNG_B64,
+      target_note: "Projects/Plan.md",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.path).toBe("Projects/files/diagram.png");
+      expect(r.value.content_type).toBe("image/png");
+      expect(r.value.size).toBe(PNG_BYTES.length);
+      expect(r.value.embed_markdown).toBe("![[files/diagram.png]]");
+    }
+    const stored = await c.getBinary("Projects/files/diagram.png");
+    expect(new Uint8Array(stored!.body)).toEqual(new Uint8Array(PNG_BYTES));
+  });
+
+  it("uploadAttachmentData honors vault_default mode", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const vd = makeCfg({ attachmentsPathMode: "vault_default", attachmentsSubfolder: "_att" });
+    const r = await uploadAttachmentData(c, vd, {
+      filename: "a.png",
+      data_base64: PNG_B64,
+      target_note: "Deep/Note.md",
+    });
+    expect(r.ok && r.value.path).toBe("_att/a.png");
+  });
+
+  it("uploadAttachmentData honors caller_specified mode", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const cs = makeCfg({ attachmentsPathMode: "caller_specified" });
+    const r = await uploadAttachmentData(c, cs, {
+      filename: "a.png",
+      data_base64: PNG_B64,
+      subfolder: "Media/2026",
+    });
+    expect(r.ok && r.value.path).toBe("Media/2026/a.png");
+  });
+
+  it("uploadAttachmentData dest_path overrides path policy", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentData(c, cfg, {
+      filename: "ignored.png",
+      data_base64: PNG_B64,
+      target_note: "Note.md",
+      dest_path: "Exact/spot.png",
+    });
+    expect(r.ok && r.value.path).toBe("Exact/spot.png");
+  });
+
+  it("uploadAttachmentData accepts a data: URL and infers MIME", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentData(c, cfg, {
+      filename: "x.png",
+      data_base64: `data:image/png;base64,${PNG_B64}`,
+    });
+    expect(r.ok && r.value.content_type).toBe("image/png");
+  });
+
+  it("uploadAttachmentData rejects invalid base64", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentData(c, cfg, { filename: "x.png", data_base64: "@@not base64@@" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("invalid_base64");
+  });
+
+  it("uploadAttachmentData rejects oversize payloads", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const tiny = makeCfg({ attachmentMaxBytes: 4 });
+    const r = await uploadAttachmentData(c, tiny, { filename: "x.png", data_base64: PNG_B64 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe("too_large");
+      expect(r.max).toBe(4);
+    }
+  });
+
+  it("uploadAttachmentData rejects a disallowed extension", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentData(c, cfg, { filename: "evil.exe", data_base64: PNG_B64 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe("disallowed_extension");
+      expect(r.ext).toBe("exe");
+    }
+  });
+
+  it("uploadAttachmentData refuses to clobber without overwrite", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64 });
+    const again = await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64 });
+    expect(again.ok).toBe(false);
+    if (!again.ok) expect(again.reason).toBe("exists");
+
+    const overwrite = await uploadAttachmentData(c, cfg, {
+      filename: "a.png",
+      data_base64: PNG_B64,
+      overwrite: true,
+    });
+    expect(overwrite.ok).toBe(true);
+  });
+
+  it("readAttachment returns an image-flagged result for image MIME", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64, dest_path: "files/a.png" });
+    const r = await readAttachment(c, cfg, { path: "files/a.png" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.is_image).toBe(true);
+      expect(r.value.content_type).toBe("image/png");
+      expect(r.value.data_base64).toBe(PNG_B64);
+    }
+  });
+
+  it("readAttachment returns a non-image result for PDF", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await uploadAttachmentData(c, cfg, { filename: "doc.pdf", data_base64: PDF_B64, dest_path: "files/doc.pdf" });
+    const r = await readAttachment(c, cfg, { path: "files/doc.pdf" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.is_image).toBe(false);
+      expect(r.value.content_type).toBe("application/pdf");
+    }
+  });
+
+  it("readAttachment 404s for a missing path and blocks disallowed extensions", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const missing = await readAttachment(c, cfg, { path: "files/none.png" });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.reason).toBe("not_found");
+
+    const blocked = await readAttachment(c, cfg, { path: "secrets.env" });
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) expect(blocked.reason).toBe("disallowed_extension");
+  });
+
+  it("headAttachment returns metadata without bytes", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64, dest_path: "files/a.png" });
+    const r = await headAttachment(c, cfg, { path: "files/a.png" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.size).toBe(PNG_BYTES.length);
+      expect(r.value.content_type).toBe("image/png");
+      expect(typeof r.value.uploaded).toBe("string");
+    }
+    const missing = await headAttachment(c, cfg, { path: "files/none.png" });
+    expect(missing.ok).toBe(false);
+  });
+
+  it("listAttachments enumerates non-md objects and scopes by prefix", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("note.md", "# hi");
+    await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64, dest_path: "files/a.png" });
+    await uploadAttachmentData(c, cfg, { filename: "b.png", data_base64: PNG_B64, dest_path: "Other/b.png" });
+
+    const all = await listAttachments(c, cfg, {});
+    expect(all.items.map((i) => i.path).sort()).toEqual(["Other/b.png", "files/a.png"]);
+
+    const scoped = await listAttachments(c, cfg, { prefix: "files/" });
+    expect(scoped.items.map((i) => i.path)).toEqual(["files/a.png"]);
+  });
+
+  it("deleteAttachment is idempotent and refuses non-allowlisted paths", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await uploadAttachmentData(c, cfg, { filename: "a.png", data_base64: PNG_B64, dest_path: "files/a.png" });
+    const del = await deleteAttachment(c, cfg, { path: "files/a.png" });
+    expect(del.ok).toBe(true);
+    expect(await c.getBinary("files/a.png")).toBeNull();
+    // idempotent
+    expect((await deleteAttachment(c, cfg, { path: "files/a.png" })).ok).toBe(true);
+    // refuses to delete a markdown note through this tool
+    const blocked = await deleteAttachment(c, cfg, { path: "note.md" });
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) expect(blocked.reason).toBe("disallowed_extension");
+  });
+
+  // ─── upload_attachment_url (mocked fetch) ────────────────────────────────
+
+  function mockFetch(handler: (url: string) => Response | Promise<Response>): typeof fetch {
+    return ((input: Parameters<typeof fetch>[0]) =>
+      Promise.resolve(handler(typeof input === "string" ? input : String(input)))) as typeof fetch;
+  }
+  const imageResponse = () =>
+    new Response(new Uint8Array(PNG_BYTES), { status: 200, headers: { "content-type": "image/png" } });
+
+  it("uploadAttachmentUrl stores a fetched image (happy path)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      cfg,
+      { source_url: "https://cdn.example.com/pic.png" },
+      mockFetch(() => imageResponse()),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.path).toBe("files/pic.png");
+      expect(r.value.content_type).toBe("image/png");
+    }
+    expect(await c.getBinary("files/pic.png")).not.toBeNull();
+  });
+
+  it("uploadAttachmentUrl follows a redirect to an allowed host", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    let calls = 0;
+    const r = await uploadAttachmentUrl(
+      c,
+      cfg,
+      { source_url: "https://cdn.example.com/redir" },
+      mockFetch((url) => {
+        calls++;
+        if (url.endsWith("/redir")) {
+          return new Response(null, {
+            status: 302,
+            headers: { location: "https://assets.example.com/pic.png" },
+          });
+        }
+        return imageResponse();
+      }),
+    );
+    expect(calls).toBe(2);
+    expect(r.ok && r.value.path).toBe("files/pic.png");
+  });
+
+  it("uploadAttachmentUrl rejects a redirect to a private IP", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      cfg,
+      { source_url: "https://cdn.example.com/redir" },
+      mockFetch(() =>
+        new Response(null, { status: 302, headers: { location: "https://10.0.0.1/evil.png" } }),
+      ),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("disallowed_host");
+  });
+
+  it("uploadAttachmentUrl rejects an HTML response", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      cfg,
+      { source_url: "https://example.com/page.png" },
+      mockFetch(() => new Response("<html></html>", { status: 200, headers: { "content-type": "text/html; charset=utf-8" } })),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("html_response");
+  });
+
+  it("uploadAttachmentUrl rejects an oversize body", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const tiny = makeCfg({ attachmentMaxBytes: 4 });
+    const r = await uploadAttachmentUrl(
+      c,
+      tiny,
+      { source_url: "https://cdn.example.com/pic.png" },
+      mockFetch(() => imageResponse()),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("too_large");
+  });
+
+  it("uploadAttachmentUrl rejects a non-200 status", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      cfg,
+      { source_url: "https://cdn.example.com/pic.png" },
+      mockFetch(() => new Response("nope", { status: 404 })),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("fetch_failed");
+  });
+
+  it("uploadAttachmentUrl rejects http and IP-literal source URLs", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const never = mockFetch(() => {
+      throw new Error("fetch should not be called");
+    });
+    const insecure = await uploadAttachmentUrl(c, cfg, { source_url: "http://cdn.example.com/a.png" }, never);
+    expect(insecure.ok).toBe(false);
+    if (!insecure.ok) expect(insecure.reason).toBe("insecure_url");
+    const ip = await uploadAttachmentUrl(c, cfg, { source_url: "https://127.0.0.1/a.png" }, never);
+    expect(ip.ok).toBe(false);
+    if (!ip.ok) expect(ip.reason).toBe("disallowed_host");
+  });
+
+  it("uploadAttachmentUrl synthesizes a filename from Content-Type when the URL has none", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      cfg,
+      { source_url: "https://cdn.example.com/download" },
+      mockFetch(() => imageResponse()),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.path).toMatch(/^files\/attachment-\d+\.png$/);
+  });
+
+  it("uploadAttachmentUrl fails when no extension can be inferred", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      cfg,
+      { source_url: "https://cdn.example.com/download" },
+      mockFetch(() => new Response(new Uint8Array(PNG_BYTES), { status: 200, headers: { "content-type": "application/octet-stream" } })),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("no_extension_inferable");
   });
 });

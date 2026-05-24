@@ -215,6 +215,41 @@ export interface MoveRewriteResult {
   count: number;
 }
 
+/**
+ * Rewrite wikilink/embed targets that exactly equal `oldTarget` to `newTarget`,
+ * preserving the `!` embed marker, alias, and heading/block suffix. Unlike
+ * `rewriteWikilinksForMove`, this does NO `.md` extension stripping — it is used
+ * for attachment co-moves where targets are literal file paths (e.g.
+ * `files/diagram.png`). Skips fenced code blocks and inline code spans. When
+ * `oldTarget === newTarget` it is a no-op (the moved attachment kept the same
+ * relative form from the destination note).
+ */
+export function rewriteEmbedTargetForMove(
+  src: string,
+  oldTarget: string,
+  newTarget: string,
+): MoveRewriteResult {
+  if (oldTarget === newTarget) return { changed: false, content: src, count: 0 };
+  const masked = maskedRanges(src);
+  const re = /(!?)\[\[([^\]|#]+)((?:[|#][^\]]*)?)\]\]/g;
+  let result = "";
+  let lastEnd = 0;
+  let count = 0;
+  for (const m of src.matchAll(re)) {
+    const matchStart = m.index!;
+    if (offsetMasked(matchStart, masked)) continue;
+    if (m[2].trim() !== oldTarget) continue;
+    const prefix = m[1] ?? "";
+    const suffix = m[3] ?? "";
+    result += src.slice(lastEnd, matchStart) + prefix + "[[" + newTarget + suffix + "]]";
+    lastEnd = matchStart + m[0].length;
+    count++;
+  }
+  if (count === 0) return { changed: false, content: src, count: 0 };
+  result += src.slice(lastEnd);
+  return { changed: true, content: result, count };
+}
+
 /** Half-open [start, end) character ranges that should be excluded from rewriting. */
 function maskedRanges(src: string): { start: number; end: number }[] {
   const ranges: { start: number; end: number }[] = [];
