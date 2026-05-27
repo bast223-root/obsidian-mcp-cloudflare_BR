@@ -11,6 +11,10 @@ export function makeCfg(overrides: Partial<VaultConfig> = {}): VaultConfig {
     attachmentsPathMode: "per_note_subfolder",
     attachmentsSubfolder: "files",
     attachmentAllowedExtensions: "png,jpg,jpeg,gif,webp,svg,pdf",
+    // Default-closed, mirroring the deployed default: the URL-fetch path denies
+    // every host until an operator opts specific hosts in. Tests that exercise
+    // uploadAttachmentUrl override this with the hosts they fetch.
+    attachmentFetchHostAllowlist: "",
     attachmentMaxBytes: 26214400,
     attachmentsMoveWithNote: "unique_refs",
     attachmentUrlTimeoutMs: 20000,

@@ -21,6 +21,7 @@ const EXT_TO_MIME: Record<string, string> = {
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  zip: "application/zip",
   txt: "text/plain",
   csv: "text/csv",
   md: "text/markdown",
@@ -39,6 +40,7 @@ const MIME_TO_EXT: Record<string, string> = {
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "application/zip": "zip",
   "text/plain": "txt",
   "text/csv": "csv",
   "text/markdown": "md",
@@ -319,11 +321,19 @@ export function isDisallowedAttachmentHost(hostname: string): boolean {
 
 /**
  * Validate a URL for the server-side fetch path: HTTPS only, no IP-literal or
- * loopback/link-local host. This is run on the initial URL AND on every redirect
- * target (the fetch loop uses `redirect: "manual"`), so the SSRF guard covers
- * the whole chain rather than just the first hop.
+ * loopback/link-local host (SSRF denylist), AND the host must appear in
+ * `hostAllowlist`. The allowlist is **default-closed**: an empty set rejects
+ * every host (`host_not_allowed`), so the URL-fetch path does nothing until an
+ * operator opts specific hosts in via ATTACHMENT_FETCH_HOST_ALLOWLIST. The SSRF
+ * denylist takes precedence over the allowlist, so an IP literal still reports
+ * `disallowed_host` even if someone lists it. This is run on the initial URL AND
+ * on every redirect target (the fetch loop uses `redirect: "manual"`), so both
+ * guards cover the whole chain rather than just the first hop.
  */
-export function validateAttachmentSourceUrl(raw: string): ToolResult<URL> {
+export function validateAttachmentSourceUrl(
+  raw: string,
+  hostAllowlist: Set<string>,
+): ToolResult<URL> {
   let url: URL;
   try {
     url = new URL(raw);
@@ -332,5 +342,19 @@ export function validateAttachmentSourceUrl(raw: string): ToolResult<URL> {
   }
   if (url.protocol !== "https:") return err("insecure_url", { protocol: url.protocol });
   if (isDisallowedAttachmentHost(url.hostname)) return err("disallowed_host", { host: url.hostname });
+  const host = url.hostname.toLowerCase().replace(/\.$/, "");
+  if (!hostAllowlist.has(host)) {
+    return err("host_not_allowed", { host: url.hostname, allowed: [...hostAllowlist].sort() });
+  }
   return ok(url);
+}
+
+/** Parse a CSV host allowlist into a Set of lowercased, trailing-dot-stripped hostnames. */
+export function parseHostAllowlist(csv: string): Set<string> {
+  const out = new Set<string>();
+  for (const raw of csv.split(",")) {
+    const h = raw.trim().toLowerCase().replace(/\.$/, "");
+    if (h) out.add(h);
+  }
+  return out;
 }

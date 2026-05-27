@@ -37,6 +37,9 @@ export interface VaultConfig {
   attachmentsSubfolder: string;
   /** CSV of allowed extensions (lowercase). Empty falls back to the built-in default list. */
   attachmentAllowedExtensions: string;
+  /** CSV of hostnames the server-side URL-fetch path may download from. Default-closed:
+   * empty means no host is allowed (upload_attachment_url is effectively disabled). */
+  attachmentFetchHostAllowlist: string;
   /** Hard cap on upload size in bytes (post-decode / fetched body). */
   attachmentMaxBytes: number;
   attachmentsMoveWithNote: AttachmentsMoveWithNote;

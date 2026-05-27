@@ -34,6 +34,7 @@ export function buildVaultConfig(env: Env): VaultConfig {
     attachmentsPathMode: parsePathMode(env.ATTACHMENTS_PATH_MODE),
     attachmentsSubfolder: env.ATTACHMENTS_SUBFOLDER || "files",
     attachmentAllowedExtensions: env.ATTACHMENT_ALLOWED_EXTENSIONS ?? "",
+    attachmentFetchHostAllowlist: env.ATTACHMENT_FETCH_HOST_ALLOWLIST ?? "",
     attachmentMaxBytes: parsePositiveInt(env.ATTACHMENT_MAX_BYTES, 26214400),
     attachmentsMoveWithNote: parseMoveWithNote(env.ATTACHMENTS_MOVE_WITH_NOTE),
     attachmentUrlTimeoutMs: parsePositiveInt(env.ATTACHMENT_URL_TIMEOUT_MS, 20000),

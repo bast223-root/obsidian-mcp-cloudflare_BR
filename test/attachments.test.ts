@@ -33,6 +33,10 @@ describe("extensionToMime / mimeToExtension", () => {
     expect(mimeToExtension("application/pdf")).toBe("pdf");
     expect(mimeToExtension("application/x-unknown")).toBeNull();
   });
+  it("maps zip both ways", () => {
+    expect(extensionToMime("zip")).toBe("application/zip");
+    expect(mimeToExtension("application/zip")).toBe("zip");
+  });
 });
 
 describe("isImageMime", () => {
@@ -256,22 +260,37 @@ describe("isDisallowedAttachmentHost", () => {
 });
 
 describe("validateAttachmentSourceUrl", () => {
-  it("accepts a normal https URL", () => {
-    const r = validateAttachmentSourceUrl("https://cdn.example.com/a.png");
+  const allow = (...hosts: string[]) => new Set(hosts);
+  it("accepts an https URL whose host is in the allowlist", () => {
+    const r = validateAttachmentSourceUrl("https://cdn.example.com/a.png", allow("cdn.example.com"));
     expect(r.ok).toBe(true);
   });
-  it("rejects non-https", () => {
-    const r = validateAttachmentSourceUrl("http://cdn.example.com/a.png");
+  it("rejects a host that is not in the allowlist", () => {
+    const r = validateAttachmentSourceUrl("https://evil.example.com/a.png", allow("cdn.example.com"));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("host_not_allowed");
+  });
+  it("denies every host when the allowlist is empty (default-closed)", () => {
+    const r = validateAttachmentSourceUrl("https://cdn.example.com/a.png", allow());
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("host_not_allowed");
+  });
+  it("matches allowlist hosts case-insensitively", () => {
+    const r = validateAttachmentSourceUrl("https://CDN.Example.com/a.png", allow("cdn.example.com"));
+    expect(r.ok).toBe(true);
+  });
+  it("rejects non-https before any host check", () => {
+    const r = validateAttachmentSourceUrl("http://cdn.example.com/a.png", allow("cdn.example.com"));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("insecure_url");
   });
-  it("rejects IP-literal hosts", () => {
-    const r = validateAttachmentSourceUrl("https://10.0.0.1/a.png");
+  it("denylist (SSRF) wins over allowlist for IP literals", () => {
+    const r = validateAttachmentSourceUrl("https://10.0.0.1/a.png", allow("10.0.0.1"));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("disallowed_host");
   });
   it("rejects unparseable URLs", () => {
-    const r = validateAttachmentSourceUrl("not a url");
+    const r = validateAttachmentSourceUrl("not a url", allow("cdn.example.com"));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("invalid_url");
   });

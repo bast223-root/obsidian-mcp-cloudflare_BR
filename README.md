@@ -62,7 +62,7 @@ Obsidian (Mac / iOS / iPad)
 | `get_or_create_daily_note(date?)` | Create or fetch today's (or a given date's) daily note |
 | `append_to_daily_note(date?, content)` | Append a line to today's (or a given date's) daily note |
 | `backfill_ids(dryRun?, limit?, prefix?)` | Scan the vault and mint a nanoid `id:` for any note missing one. Default `dryRun: true`. Returns counts plus up to 10 example writes. Safe to re-run; existing ids (any scheme) are skipped |
-| `upload_attachment_url(source_url, filename?, target_note?, subfolder?, overwrite?, dest_path?)` | Fetch an HTTPS asset server-side and store it. SSRF-guarded (HTTPS only, no IP-literal/loopback hosts, validated across redirects), size-capped, HTML rejected. Same return shape. Failures: `invalid_url`, `insecure_url`, `disallowed_host`, `too_many_redirects`, `fetch_failed`, `html_response`, `too_large`, `no_extension_inferable`, `disallowed_extension`, `exists` |
+| `upload_attachment_url(source_url, filename?, target_note?, subfolder?, overwrite?, dest_path?)` | Fetch an HTTPS asset server-side and store it. Host must be in `ATTACHMENT_FETCH_HOST_ALLOWLIST` (**default-closed** — empty allowlist rejects every host with `host_not_allowed`); also SSRF-guarded (HTTPS only, no IP-literal/loopback hosts), all re-validated across redirects, size-capped, HTML rejected. Any failure is terminal (nothing written). Same return shape. Failures: `invalid_url`, `insecure_url`, `host_not_allowed`, `disallowed_host`, `too_many_redirects`, `fetch_failed`, `html_response`, `too_large`, `no_extension_inferable`, `disallowed_extension`, `exists` |
 | `read_attachment(path)` | Read an attachment. Image types return an MCP `image` content block + JSON metadata; non-image types return one JSON block with the base64 in `data_base64`. Only allowlisted extensions. Failures: `not_found`, `disallowed_extension` |
 | `head_attachment(path)` | Metadata only — JSON `{path, size, content_type, etag, uploaded}`. Use to check `size` before a `read_attachment`. Failure: `not_found` |
 | `list_attachments(prefix?, limit?, cursor?)` | List non-`.md` objects. Returns JSON `{items, cursor}`; `cursor` paginates. Empty `prefix` lists the whole vault |
@@ -187,10 +187,11 @@ All have safe defaults baked into `wrangler.example.jsonc`; edit there (then `np
 |-----|---------|---------|
 | `ATTACHMENTS_PATH_MODE` | `per_note_subfolder` | Path policy (table above). |
 | `ATTACHMENTS_SUBFOLDER` | `files` | Subfolder name used by the first two modes. |
-| `ATTACHMENT_ALLOWED_EXTENSIONS` | `png,jpg,jpeg,gif,webp,svg,pdf` | CSV allowlist (lowercase). Enforced on upload, read, and delete. Broaden, e.g. `…,docx,xlsx,pptx,txt,csv`. |
+| `ATTACHMENT_ALLOWED_EXTENSIONS` | `png,jpg,jpeg,gif,webp,svg,pdf,docx,xlsx,pptx,zip,txt` | CSV allowlist (lowercase). Enforced on upload, read, and delete. Broaden further, e.g. add `csv`. |
 | `ATTACHMENT_MAX_BYTES` | `26214400` (25 MiB) | Upload size cap (post-decode and on URL fetch). |
 | `ATTACHMENTS_MOVE_WITH_NOTE` | `unique_refs` | `unique_refs`: `move_note` co-moves attachments uniquely embedded by the note. `never`: leave them. |
 | `ATTACHMENT_URL_TIMEOUT_MS` | `20000` | Timeout for `upload_attachment_url`. |
+| `ATTACHMENT_FETCH_HOST_ALLOWLIST` | *(empty)* | CSV of hostnames `upload_attachment_url` may fetch from. **Default-closed:** empty ⇒ the tool fetches from no host (`host_not_allowed`). Deployment-specific, so it's filled from `.env` (not baked into `wrangler.example.jsonc`); rerun `npm run setup` after changing it. |
 
 ### `read_attachment` returns base64 for non-images
 
@@ -204,7 +205,9 @@ Caveat (same R2-has-no-transactions reality as the note rollback): attachment by
 
 ### URL-fetch security model
 
-`upload_attachment_url` is HTTPS-only and rejects IP-literal, `localhost`, `*.local`, and `*.internal` hosts. Redirects are followed manually (cap 5 hops) with the same host/protocol check re-run on every hop, so the SSRF guard covers the whole chain — not just the initial URL. HTML responses and bodies exceeding `ATTACHMENT_MAX_BYTES` (by `Content-Length` or actual size) are refused. Prefer direct asset URLs (`.png`/`.pdf`/…) over web pages.
+`upload_attachment_url` is **default-closed**: the host must appear in `ATTACHMENT_FETCH_HOST_ALLOWLIST` or the fetch is refused with `host_not_allowed` — an empty allowlist (the default) disables the tool entirely. On top of that it is HTTPS-only and rejects IP-literal, `localhost`, `*.local`, and `*.internal` hosts (the SSRF denylist, which takes precedence over the allowlist). Redirects are followed manually (cap 5 hops) with both the allowlist and the host/protocol checks re-run on every hop, so the guards cover the whole chain — not just the initial URL. HTML responses and bodies exceeding `ATTACHMENT_MAX_BYTES` (by `Content-Length` or actual size) are refused. Any failure is terminal — nothing is written to the vault, so a caller orchestrating a transfer (e.g. from another MCP server) must treat a non-success result as "not stored" and not act on the source. Prefer direct asset URLs (`.png`/`.pdf`/…) over web pages.
+
+The allowlist is the key guardrail for cross-server attachment transfer (a companion MCP server mints a short-lived signed download URL; this Worker pulls it server-side). Without it, a prompt injection in processed content could point the fetch at an attacker-controlled host.
 
 ## Uploading large images / mobile photos (direct upload endpoint)
 

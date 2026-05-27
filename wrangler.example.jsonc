@@ -40,16 +40,21 @@
     //   caller_specified   — the AI supplies the folder; ATTACHMENTS_SUBFOLDER ignored
     "ATTACHMENTS_PATH_MODE": "per_note_subfolder",
     "ATTACHMENTS_SUBFOLDER": "files",
-    // CSV of allowed extensions (lowercase). To broaden, e.g.:
-    // "png,jpg,jpeg,gif,webp,svg,pdf,docx,xlsx,pptx,txt,csv"
-    "ATTACHMENT_ALLOWED_EXTENSIONS": "png,jpg,jpeg,gif,webp,svg,pdf",
+    // CSV of allowed extensions (lowercase). To broaden further, e.g. add csv.
+    "ATTACHMENT_ALLOWED_EXTENSIONS": "png,jpg,jpeg,gif,webp,svg,pdf,docx,xlsx,pptx,zip,txt",
     // Hard cap on upload size in bytes (post-decode / fetched body). 25 MiB.
     "ATTACHMENT_MAX_BYTES": 26214400,
     // unique_refs — move_note co-moves attachments uniquely embedded by the note.
     // never       — move_note never touches attachments.
     "ATTACHMENTS_MOVE_WITH_NOTE": "unique_refs",
     // Timeout for the upload_attachment_url fetch path, in milliseconds.
-    "ATTACHMENT_URL_TIMEOUT_MS": 20000
+    "ATTACHMENT_URL_TIMEOUT_MS": 20000,
+    // CSV of hostnames upload_attachment_url may fetch from (server-side pull).
+    // DEFAULT-CLOSED: empty ⇒ NO host is fetchable and the tool always returns
+    // 'host_not_allowed'. This is deployment-specific, so it is filled from .env
+    // (ATTACHMENT_FETCH_HOST_ALLOWLIST) rather than hardcoded here. Set it to the
+    // host(s) you transfer attachments from, e.g. another MCP server you operate.
+    "ATTACHMENT_FETCH_HOST_ALLOWLIST": "${ATTACHMENT_FETCH_HOST_ALLOWLIST}"
   },
   "observability": { "enabled": true }
 }

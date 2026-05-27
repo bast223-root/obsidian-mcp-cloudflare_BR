@@ -1112,12 +1112,17 @@ describe("attachment tools", () => {
   }
   const imageResponse = () =>
     new Response(new Uint8Array(PNG_BYTES), { status: 200, headers: { "content-type": "image/png" } });
+  // The URL-fetch path is default-closed: hosts must be allowlisted. fetchCfg opts
+  // in the example hosts these tests fetch from.
+  const fetchCfg = makeCfg({
+    attachmentFetchHostAllowlist: "cdn.example.com,assets.example.com,example.com",
+  });
 
   it("uploadAttachmentUrl stores a fetched image (happy path)", async () => {
     const c = new R2Client(env.VAULT, cfg);
     const r = await uploadAttachmentUrl(
       c,
-      cfg,
+      fetchCfg,
       { source_url: "https://cdn.example.com/pic.png" },
       mockFetch(() => imageResponse()),
     );
@@ -1134,7 +1139,7 @@ describe("attachment tools", () => {
     let calls = 0;
     const r = await uploadAttachmentUrl(
       c,
-      cfg,
+      fetchCfg,
       { source_url: "https://cdn.example.com/redir" },
       mockFetch((url) => {
         calls++;
@@ -1155,7 +1160,7 @@ describe("attachment tools", () => {
     const c = new R2Client(env.VAULT, cfg);
     const r = await uploadAttachmentUrl(
       c,
-      cfg,
+      fetchCfg,
       { source_url: "https://cdn.example.com/redir" },
       mockFetch(() =>
         new Response(null, { status: 302, headers: { location: "https://10.0.0.1/evil.png" } }),
@@ -1169,7 +1174,7 @@ describe("attachment tools", () => {
     const c = new R2Client(env.VAULT, cfg);
     const r = await uploadAttachmentUrl(
       c,
-      cfg,
+      fetchCfg,
       { source_url: "https://example.com/page.png" },
       mockFetch(() => new Response("<html></html>", { status: 200, headers: { "content-type": "text/html; charset=utf-8" } })),
     );
@@ -1179,7 +1184,7 @@ describe("attachment tools", () => {
 
   it("uploadAttachmentUrl rejects an oversize body", async () => {
     const c = new R2Client(env.VAULT, cfg);
-    const tiny = makeCfg({ attachmentMaxBytes: 4 });
+    const tiny = makeCfg({ attachmentMaxBytes: 4, attachmentFetchHostAllowlist: "cdn.example.com" });
     const r = await uploadAttachmentUrl(
       c,
       tiny,
@@ -1194,7 +1199,7 @@ describe("attachment tools", () => {
     const c = new R2Client(env.VAULT, cfg);
     const r = await uploadAttachmentUrl(
       c,
-      cfg,
+      fetchCfg,
       { source_url: "https://cdn.example.com/pic.png" },
       mockFetch(() => new Response("nope", { status: 404 })),
     );
@@ -1219,7 +1224,7 @@ describe("attachment tools", () => {
     const c = new R2Client(env.VAULT, cfg);
     const r = await uploadAttachmentUrl(
       c,
-      cfg,
+      fetchCfg,
       { source_url: "https://cdn.example.com/download" },
       mockFetch(() => imageResponse()),
     );
@@ -1231,11 +1236,63 @@ describe("attachment tools", () => {
     const c = new R2Client(env.VAULT, cfg);
     const r = await uploadAttachmentUrl(
       c,
-      cfg,
+      fetchCfg,
       { source_url: "https://cdn.example.com/download" },
       mockFetch(() => new Response(new Uint8Array(PNG_BYTES), { status: 200, headers: { "content-type": "application/octet-stream" } })),
     );
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("no_extension_inferable");
+  });
+
+  it("uploadAttachmentUrl rejects an initial host not in the allowlist (no fetch)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const never = mockFetch(() => {
+      throw new Error("fetch should not be called");
+    });
+    const r = await uploadAttachmentUrl(
+      c,
+      fetchCfg,
+      { source_url: "https://not-allowed.example.org/pic.png" },
+      never,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("host_not_allowed");
+  });
+
+  it("uploadAttachmentUrl rejects a redirect to a non-allowlisted host", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      fetchCfg,
+      { source_url: "https://cdn.example.com/redir" },
+      mockFetch(() =>
+        new Response(null, {
+          status: 302,
+          headers: { location: "https://not-allowed.example.org/pic.png" },
+        }),
+      ),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("host_not_allowed");
+  });
+
+  it("uploadAttachmentUrl rejects a disallowed file type clearly (no write)", async () => {
+    // A To Do attachment of an unsupported type (e.g. an .exe) must fail with a
+    // distinct, terminal error so the orchestrator never assumes the file moved.
+    const c = new R2Client(env.VAULT, cfg);
+    const r = await uploadAttachmentUrl(
+      c,
+      fetchCfg,
+      { source_url: "https://cdn.example.com/installer.exe" },
+      mockFetch(() => new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 })),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe("disallowed_extension");
+      expect(r.ext).toBe("exe");
+      expect(Array.isArray(r.allowed)).toBe(true);
+    }
+    // Nothing was written to the vault.
+    expect(await c.getBinary("files/installer.exe")).toBeNull();
   });
 });

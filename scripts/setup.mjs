@@ -93,6 +93,8 @@ function applyDefaults(env) {
   if (env.VAULT_PREFIX === undefined) env.VAULT_PREFIX = "";
   if (env.DAILY_NOTE_PATH_TEMPLATE === undefined) env.DAILY_NOTE_PATH_TEMPLATE = "Daily Notes/{{YYYY-MM-DD}}.md";
   if (env.PERMALINK_BASE_URL === undefined) env.PERMALINK_BASE_URL = "";
+  // Default-closed: empty means upload_attachment_url can fetch from no host.
+  if (env.ATTACHMENT_FETCH_HOST_ALLOWLIST === undefined) env.ATTACHMENT_FETCH_HOST_ALLOWLIST = "";
 }
 
 function verifyAccount(accountId) {

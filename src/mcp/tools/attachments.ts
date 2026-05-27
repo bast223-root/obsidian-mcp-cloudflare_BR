@@ -10,6 +10,7 @@ import {
   isImageMime,
   mimeToExtension,
   parseExtensionAllowlist,
+  parseHostAllowlist,
   relativeForEmbed,
   resolveAttachmentPath,
   validateAttachmentSourceUrl,
@@ -21,6 +22,11 @@ function allowlistFor(cfg: VaultConfig): Set<string> {
     ? cfg.attachmentAllowedExtensions
     : DEFAULT_ATTACHMENT_EXTENSIONS;
   return parseExtensionAllowlist(csv);
+}
+
+/** Resolve the host allowlist for the server-side URL-fetch path (default-closed). */
+function hostAllowlistFor(cfg: VaultConfig): Set<string> {
+  return parseHostAllowlist(cfg.attachmentFetchHostAllowlist);
 }
 
 export interface UploadResult {
@@ -94,7 +100,8 @@ export async function uploadAttachmentUrl(
   args: UploadUrlArgs,
   fetchFn: typeof fetch = fetch,
 ): Promise<ToolResult<UploadResult>> {
-  const urlR = validateAttachmentSourceUrl(args.source_url);
+  const hostAllowlist = hostAllowlistFor(cfg);
+  const urlR = validateAttachmentSourceUrl(args.source_url, hostAllowlist);
   if (!urlR.ok) return urlR;
 
   let url = urlR.value;
@@ -114,7 +121,7 @@ export async function uploadAttachmentUrl(
     } catch {
       return err("invalid_url", { url: location });
     }
-    const reval = validateAttachmentSourceUrl(next.toString());
+    const reval = validateAttachmentSourceUrl(next.toString(), hostAllowlist);
     if (!reval.ok) return reval;
     url = next;
   }

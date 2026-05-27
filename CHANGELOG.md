@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (`upload_attachment_url`):** the server-side URL-fetch path is now **default-closed**. A new `ATTACHMENT_FETCH_HOST_ALLOWLIST` wrangler var (CSV of hostnames) gates which hosts may be fetched; **when it is empty/unset the tool fetches from no host and returns `host_not_allowed`**. Previously any public HTTPS host (passing the SSRF denylist) was fetchable. The allowlist is re-checked on every redirect hop, and the SSRF denylist still takes precedence (IP-literal/loopback → `disallowed_host`). This is the critical guardrail for the planned cross-server attachment transfer (ROADMAP §9) — without it a prompt injection could redirect the server-side fetch to an attacker host. **To keep `upload_attachment_url` working after upgrade, set `ATTACHMENT_FETCH_HOST_ALLOWLIST` in `.env` and rerun `npm run setup`** (it flows through `.env` → `wrangler.jsonc`, unlike the other baked-in `ATTACHMENT_*` vars).
+- `upload_attachment_url` failures are now documented as terminal (nothing is written to the vault on any error) so orchestrating callers don't assume a transfer succeeded; the tool description enumerates `host_not_allowed` and clarifies `disallowed_extension` carries the allowed list.
+
 ### Added
 
+- Attachment extension allowlist broadened to include `docx,xlsx,pptx,zip,txt` by default (`ATTACHMENT_ALLOWED_EXTENSIONS` in `wrangler.example.jsonc`); added a `zip` ↔ `application/zip` MIME mapping. Lets the URL-fetch and upload paths accept Office documents, zips, and plain text.
 - `npm run secrets:push` (`scripts/push-secrets.sh`) — pushes production Workers secrets to Cloudflare from a gitignored `.secrets.env`, resolving 1Password `op://` references via the `op` CLI and piping each value over stdin to `wrangler secret put` (no secret in argv/scrollback). Optional `OP_ACCOUNT` (env var or a line in `.secrets.env`) disambiguates which 1Password account owns the referenced vault. `.secrets.env` is separate from `.dev.vars`, which keeps throwaway local-dev literals for `wrangler dev`. New `.secrets.env.example` documents the shape; `DEPLOYMENT.md` covers the flow alongside the manual `wrangler secret put` steps.
 
 ## [0.10.0] - 2026-05-24
