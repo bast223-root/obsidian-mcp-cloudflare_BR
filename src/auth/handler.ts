@@ -1,7 +1,7 @@
 import type { Props } from "../types";
 import { renderConsent } from "./consent-page";
 import { handleUpload } from "../upload/handler";
-import { timingSafeEqual } from "../upload/tokens";
+import { signValue, timingSafeEqual, verifyValue } from "../upload/tokens";
 import { MIN_SECRET_LEN } from "../config";
 import { clearAuthFailures, isRateLimited, recordAuthFailure } from "./rate-limit";
 import { log } from "../log";
@@ -47,40 +47,60 @@ export default {
       return new Response("not found", { status: 404 });
     }
 
+    // Fail closed if the deployed AUTH_PASSWORD is missing or too weak, rather
+    // than letting a short/empty secret gate the vault. AUTH_PASSWORD is also the
+    // key that signs the oauthReqInfo blob below, so this guard must run for both
+    // GET and POST. Push-time validation in scripts/push-secrets.sh is the first
+    // line; this is the backstop.
+    if (!env.AUTH_PASSWORD || env.AUTH_PASSWORD.length < MIN_SECRET_LEN) {
+      log.error("auth_misconfigured", { reason: "AUTH_PASSWORD unset or below minimum length" });
+      return html(
+        renderConsent({
+          clientName: "MCP client",
+          oauthReqInfo: "",
+          error: "Server authentication is misconfigured. Contact the operator.",
+        }),
+        503,
+      );
+    }
+
     if (req.method === "GET") {
       const oauthReqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(req);
-      const encoded = btoa(JSON.stringify(oauthReqInfo));
+      // HMAC-sign the blob so the POST handler can detect tampering. The key
+      // never leaves the server; the client only round-trips the opaque
+      // `payload.sig` string in the hidden form field.
+      const signed = await signValue(env.AUTH_PASSWORD, btoa(JSON.stringify(oauthReqInfo)));
       const client = await env.OAUTH_PROVIDER.lookupClient(oauthReqInfo.clientId);
-      return html(renderConsent({ clientName: client?.clientName ?? "MCP client", oauthReqInfo: encoded }));
+      return html(renderConsent({ clientName: client?.clientName ?? "MCP client", oauthReqInfo: signed }));
     }
 
     if (req.method === "POST") {
       const form = await req.formData();
       const password = form.get("password");
-      const encoded = form.get("oauthReqInfo");
-      if (typeof password !== "string" || typeof encoded !== "string") {
+      const signed = form.get("oauthReqInfo");
+      if (typeof password !== "string" || typeof signed !== "string") {
         log.info("auth_form_invalid", {
           missing_password: typeof password !== "string",
-          missing_req: typeof encoded !== "string",
+          missing_req: typeof signed !== "string",
         });
         return html(renderConsent({ clientName: "MCP client", oauthReqInfo: "", error: "Missing fields." }), 400);
       }
-      const oauthReqInfo = JSON.parse(atob(encoded));
 
-      // Fail closed if the deployed AUTH_PASSWORD is missing or too weak, rather
-      // than letting a short/empty secret gate the vault. Push-time validation
-      // in scripts/push-secrets.sh is the first line; this is the backstop.
-      if (!env.AUTH_PASSWORD || env.AUTH_PASSWORD.length < MIN_SECRET_LEN) {
-        log.error("auth_misconfigured", { reason: "AUTH_PASSWORD unset or below minimum length" });
+      // Reject a tampered or unsigned oauthReqInfo blob before trusting any field
+      // inside it (clientId, scope, redirectUri).
+      const payload = await verifyValue(env.AUTH_PASSWORD, signed);
+      if (payload === null) {
+        log.warn("auth_state_tampered", { ip: req.headers.get("cf-connecting-ip") });
         return html(
           renderConsent({
             clientName: "MCP client",
-            oauthReqInfo: encoded,
-            error: "Server authentication is misconfigured. Contact the operator.",
+            oauthReqInfo: "",
+            error: "Invalid or expired request. Please reconnect and try again.",
           }),
-          503,
+          400,
         );
       }
+      const oauthReqInfo = JSON.parse(atob(payload));
 
       const ip = req.headers.get("cf-connecting-ip") ?? "";
 
@@ -93,7 +113,7 @@ export default {
         return html(
           renderConsent({
             clientName: "MCP client",
-            oauthReqInfo: encoded,
+            oauthReqInfo: signed,
             error: "Too many failed attempts. Try again later.",
           }),
           429,
@@ -106,7 +126,7 @@ export default {
           clientId: oauthReqInfo.clientId,
           ip,
         });
-        return html(renderConsent({ clientName: "MCP client", oauthReqInfo: encoded, error: "Wrong password." }), 401);
+        return html(renderConsent({ clientName: "MCP client", oauthReqInfo: signed, error: "Wrong password." }), 401);
       }
       await clearAuthFailures(env.OAUTH_KV, ip);
       const props: Props = { user: "owner" };

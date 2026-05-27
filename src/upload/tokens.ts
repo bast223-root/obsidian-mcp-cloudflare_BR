@@ -62,6 +62,50 @@ export function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+/**
+ * Derive a purpose-specific subkey from a root secret via HKDF-SHA256. Lets us
+ * use a signing key that is cryptographically separated from the raw secret a
+ * client presents (e.g. the UPLOAD_TOKEN bearer): the subkey is a one-way
+ * derivation, so the bearer secret and the link-signing key are not the same
+ * value. `info` domain-separates subkeys; version it so keys can be rotated.
+ */
+async function deriveSubkey(rootSecret: string, info: string): Promise<string> {
+  const ikm = await crypto.subtle.importKey("raw", encoder.encode(rootSecret), "HKDF", false, [
+    "deriveBits",
+  ]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: encoder.encode(info) },
+    ikm,
+    256,
+  );
+  return b64urlEncode(new Uint8Array(bits));
+}
+
+/** Info label for the upload-link HMAC subkey derived from UPLOAD_TOKEN. */
+const UPLOAD_LINK_SIGN_INFO = "obsv:upload-link-sign:v1";
+
+/**
+ * Sign an opaque ASCII value with HMAC-SHA256, returning `value.sig` (sig is
+ * base64url). Used to make round-tripped state tamper-evident (e.g. the OAuth
+ * consent page's oauthReqInfo blob). `value` must not contain ".".
+ */
+export async function signValue(secret: string, value: string): Promise<string> {
+  return `${value}.${b64urlEncode(await hmac(secret, value))}`;
+}
+
+/**
+ * Verify a `value.sig` string produced by {@link signValue}. Returns the value
+ * when the signature matches (constant-time), else null.
+ */
+export async function verifyValue(secret: string, signed: string): Promise<string | null> {
+  const dot = signed.indexOf(".");
+  if (dot <= 0) return null;
+  const value = signed.slice(0, dot);
+  const sig = signed.slice(dot + 1);
+  const expected = b64urlEncode(await hmac(secret, value));
+  return timingSafeEqual(sig, expected) ? value : null;
+}
+
 export interface UploadTokenScope {
   target_note?: string;
   subfolder?: string;
@@ -97,7 +141,8 @@ export async function signUploadToken(
   const exp = Math.floor(Date.now() / 1000) + ttl;
   const payload: UploadTokenPayload = { jti, exp, ...scope };
   const body = b64urlEncodeString(JSON.stringify(payload));
-  const sig = b64urlEncode(await hmac(env.UPLOAD_TOKEN, body));
+  const signKey = await deriveSubkey(env.UPLOAD_TOKEN, UPLOAD_LINK_SIGN_INFO);
+  const sig = b64urlEncode(await hmac(signKey, body));
   await env.OAUTH_KV.put(KV_PREFIX + jti, "1", { expirationTtl: ttl });
   return { token: `${body}.${sig}`, expiresAt: new Date(exp * 1000).toISOString() };
 }
@@ -115,7 +160,8 @@ export async function verifyUploadToken(
   if (dot <= 0) return err("invalid_token");
   const body = token.slice(0, dot);
   const sig = token.slice(dot + 1);
-  const expectedSig = b64urlEncode(await hmac(env.UPLOAD_TOKEN, body));
+  const signKey = await deriveSubkey(env.UPLOAD_TOKEN, UPLOAD_LINK_SIGN_INFO);
+  const expectedSig = b64urlEncode(await hmac(signKey, body));
   if (!timingSafeEqual(sig, expectedSig)) return err("invalid_token");
 
   const json = b64urlDecodeToString(body);
