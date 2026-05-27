@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Props, ToolResult, VaultConfig } from "../types";
 import { buildVaultConfig } from "../config";
+import { VERSION } from "../version";
 import { R2Client } from "../vault/r2-client";
 import { SqlStore, VaultIndex } from "../vault/index-store";
 import { listNotes, readNote, createNote, replaceNote, replaceBody, deleteNote, patchNote, moveNote } from "./tools/notes";
@@ -84,7 +85,7 @@ function fromToolResultMixedBlocks<T>(
 }
 
 export class ObsidianMCP extends McpAgent<Env, never, Props> {
-  server = new McpServer({ name: "obsidian-vault", version: "0.10.0" });
+  server = new McpServer({ name: "obsidian-vault", version: VERSION });
   private _index?: VaultIndex;
 
   private get vault(): R2Client {
