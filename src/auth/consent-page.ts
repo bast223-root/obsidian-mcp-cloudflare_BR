@@ -11,7 +11,13 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-export function renderConsent(opts: { error?: string; clientName: string; oauthReqInfo: string }): string {
+export function renderConsent(opts: {
+  error?: string;
+  clientName: string;
+  oauthReqInfo: string;
+  /** Double-submit CSRF token; must match the value set in the csrf cookie. */
+  csrf?: string;
+}): string {
   const err = opts.error ? `<p class="err">${escapeHtml(opts.error)}</p>` : "";
   return `<!doctype html><html><head><meta charset="utf-8"><title>Authorize MCP</title>
 <style>body{font-family:system-ui;max-width:420px;margin:4rem auto;padding:1rem}
@@ -20,6 +26,7 @@ form{display:flex;flex-direction:column;gap:0.5rem}.err{color:#b00}</style></hea
 <p>Grant access to your Obsidian vault.</p>${err}
 <form method="POST">
 <input type="hidden" name="oauthReqInfo" value="${escapeHtml(opts.oauthReqInfo)}">
+<input type="hidden" name="csrf" value="${escapeHtml(opts.csrf ?? "")}">
 <label>Password<input type="password" name="password" autofocus required></label>
 <button type="submit">Authorize</button>
 </form></body></html>`;

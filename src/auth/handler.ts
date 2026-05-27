@@ -22,6 +22,42 @@ function html(body: string, status = 200): Response {
   });
 }
 
+const CSRF_COOKIE = "obsv_csrf";
+
+function makeCsrfToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function readCookie(req: Request, name: string): string | null {
+  const header = req.headers.get("cookie");
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return null;
+}
+
+// Render the consent page with a fresh double-submit CSRF token and set the
+// matching SameSite=Strict cookie. Every consent render (initial GET and every
+// POST re-render) issues a new token, so a retry after an error always carries a
+// valid cookie/field pair. A forged cross-site POST can't supply the cookie
+// (SameSite=Strict, HttpOnly), so the cookie/field equality check below fails.
+function consentResponse(
+  opts: { error?: string; clientName: string; oauthReqInfo: string },
+  status = 200,
+): Response {
+  const csrf = makeCsrfToken();
+  const res = html(renderConsent({ ...opts, csrf }), status);
+  res.headers.append(
+    "set-cookie",
+    `${CSRF_COOKIE}=${csrf}; HttpOnly; Secure; SameSite=Strict; Path=/authorize; Max-Age=600`,
+  );
+  return res;
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
@@ -54,12 +90,12 @@ export default {
     // line; this is the backstop.
     if (!env.AUTH_PASSWORD || env.AUTH_PASSWORD.length < MIN_SECRET_LEN) {
       log.error("auth_misconfigured", { reason: "AUTH_PASSWORD unset or below minimum length" });
-      return html(
-        renderConsent({
+      return consentResponse(
+        {
           clientName: "MCP client",
           oauthReqInfo: "",
           error: "Server authentication is misconfigured. Contact the operator.",
-        }),
+        },
         503,
       );
     }
@@ -71,7 +107,7 @@ export default {
       // `payload.sig` string in the hidden form field.
       const signed = await signValue(env.AUTH_PASSWORD, btoa(JSON.stringify(oauthReqInfo)));
       const client = await env.OAUTH_PROVIDER.lookupClient(oauthReqInfo.clientId);
-      return html(renderConsent({ clientName: client?.clientName ?? "MCP client", oauthReqInfo: signed }));
+      return consentResponse({ clientName: client?.clientName ?? "MCP client", oauthReqInfo: signed });
     }
 
     if (req.method === "POST") {
@@ -83,7 +119,23 @@ export default {
           missing_password: typeof password !== "string",
           missing_req: typeof signed !== "string",
         });
-        return html(renderConsent({ clientName: "MCP client", oauthReqInfo: "", error: "Missing fields." }), 400);
+        return consentResponse({ clientName: "MCP client", oauthReqInfo: "", error: "Missing fields." }, 400);
+      }
+
+      // CSRF: double-submit cookie. The cookie is SameSite=Strict + HttpOnly, so
+      // a forged cross-site POST can neither send nor read it; the form field
+      // must equal the cookie value. Checked before anything else is trusted.
+      const csrfCookie = readCookie(req, CSRF_COOKIE);
+      const csrfField = form.get("csrf");
+      if (!csrfCookie || typeof csrfField !== "string" || !timingSafeEqual(csrfCookie, csrfField)) {
+        log.warn("auth_csrf_failed", {
+          ip: req.headers.get("cf-connecting-ip"),
+          has_cookie: csrfCookie !== null,
+        });
+        return consentResponse(
+          { clientName: "MCP client", oauthReqInfo: signed, error: "Your session expired. Please try again." },
+          403,
+        );
       }
 
       // Reject a tampered or unsigned oauthReqInfo blob before trusting any field
@@ -91,12 +143,12 @@ export default {
       const payload = await verifyValue(env.AUTH_PASSWORD, signed);
       if (payload === null) {
         log.warn("auth_state_tampered", { ip: req.headers.get("cf-connecting-ip") });
-        return html(
-          renderConsent({
+        return consentResponse(
+          {
             clientName: "MCP client",
             oauthReqInfo: "",
             error: "Invalid or expired request. Please reconnect and try again.",
-          }),
+          },
           400,
         );
       }
@@ -110,12 +162,12 @@ export default {
       // /authorize for production (see SECURITY notes in README).
       if (await isRateLimited(env.OAUTH_KV, ip)) {
         log.warn("auth_rate_limited", { ip });
-        return html(
-          renderConsent({
+        return consentResponse(
+          {
             clientName: "MCP client",
             oauthReqInfo: signed,
             error: "Too many failed attempts. Try again later.",
-          }),
+          },
           429,
         );
       }
@@ -126,7 +178,7 @@ export default {
           clientId: oauthReqInfo.clientId,
           ip,
         });
-        return html(renderConsent({ clientName: "MCP client", oauthReqInfo: signed, error: "Wrong password." }), 401);
+        return consentResponse({ clientName: "MCP client", oauthReqInfo: signed, error: "Wrong password." }, 401);
       }
       await clearAuthFailures(env.OAUTH_KV, ip);
       const props: Props = { user: "owner" };

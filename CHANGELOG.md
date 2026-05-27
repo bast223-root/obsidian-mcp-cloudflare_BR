@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Minimum secret length (16 chars) enforced.** `npm run secrets:push` refuses to push an `AUTH_PASSWORD`/`UPLOAD_TOKEN` shorter than `MIN_SECRET_LEN` (16), and both handlers fail closed (HTTP 503) if a deployed secret is below the floor. 32+ random chars recommended.
 - **`oauthReqInfo` consent blob is now HMAC-signed.** The OAuth consent state round-tripped through the browser is signed (HMAC-SHA256, keyed by `AUTH_PASSWORD`) on GET and verified on POST, so a tampered or unsigned blob is rejected (HTTP 400) before any field inside it (`clientId`, `scope`, `redirectUri`) is trusted.
 - **Upload-link signing key is now separated from the bearer token.** The HMAC key for single-use upload links is derived from `UPLOAD_TOKEN` via HKDF-SHA256 (`obsv:upload-link-sign:v1`) instead of using the raw token, so the link-signing key and the bearer secret are no longer the same value. (Outstanding signed links are invalidated on deploy; they are single-use and ≤30-min TTL.)
+- **CSRF protection on the consent form.** `/authorize` now uses a double-submit token: every consent render sets an `HttpOnly; Secure; SameSite=Strict` `obsv_csrf` cookie and embeds the same value as a hidden field; POST rejects (HTTP 403) any request whose form field doesn't match the cookie. A forged cross-site POST can neither read nor send the cookie.
 
 ### Fixed
 

@@ -27,16 +27,24 @@ describe("renderConsent escaping", () => {
 });
 
 describe("POST /authorize", () => {
-  function buildRequest(password: string, oauthReqInfo: string, ip: string): Request {
-    const body = new URLSearchParams({ password, oauthReqInfo }).toString();
-    return new Request("https://obsv.scriptek.com/authorize", {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        "cf-connecting-ip": ip,
-      },
-      body,
-    });
+  // By default the csrf form field and cookie match (the valid double-submit
+  // pair a real GET would have set). Override `csrf`/`cookieCsrf` to exercise the
+  // CSRF failure paths; set `cookieCsrf` to null to omit the cookie entirely.
+  function buildRequest(
+    password: string,
+    oauthReqInfo: string,
+    ip: string,
+    opts: { csrf?: string; cookieCsrf?: string | null } = {},
+  ): Request {
+    const csrf = opts.csrf ?? "csrf-token-value";
+    const cookieCsrf = opts.cookieCsrf === undefined ? csrf : opts.cookieCsrf;
+    const body = new URLSearchParams({ password, oauthReqInfo, csrf }).toString();
+    const headers: Record<string, string> = {
+      "content-type": "application/x-www-form-urlencoded",
+      "cf-connecting-ip": ip,
+    };
+    if (cookieCsrf !== null) headers.cookie = `${"obsv_csrf"}=${cookieCsrf}`;
+    return new Request("https://obsv.scriptek.com/authorize", { method: "POST", headers, body });
   }
 
   // A validly-signed oauthReqInfo blob, as the GET handler would have produced
@@ -67,6 +75,30 @@ describe("POST /authorize", () => {
     const tampered = `${forgedPayload}.${signed.slice(signed.indexOf(".") + 1)}`;
     const res = await AuthHandler.fetch(buildRequest("wrong", tampered, "203.0.113.5"), env);
     expect(res.status).toBe(400);
+  });
+
+  it("rejects a POST with no CSRF cookie with 403", async () => {
+    const signed = await signValue(env.AUTH_PASSWORD, btoa(JSON.stringify({ clientId: "test-client", scope: [] })));
+    const res = await AuthHandler.fetch(buildRequest("wrong", signed, "203.0.113.6", { cookieCsrf: null }), env);
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects a POST whose CSRF field does not match the cookie with 403", async () => {
+    const signed = await signValue(env.AUTH_PASSWORD, btoa(JSON.stringify({ clientId: "test-client", scope: [] })));
+    const res = await AuthHandler.fetch(
+      buildRequest("wrong", signed, "203.0.113.7", { csrf: "field-value", cookieCsrf: "different-cookie-value" }),
+      env,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("issues a fresh CSRF cookie on every consent render", async () => {
+    const res = await AuthHandler.fetch(await postAuthorize("wrong", "203.0.113.8"), env);
+    expect(res.status).toBe(401);
+    const setCookie = res.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("obsv_csrf=");
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("SameSite=Strict");
   });
 
   it("throttles brute-force attempts from one IP with 429 after MAX_FAILURES", async () => {
