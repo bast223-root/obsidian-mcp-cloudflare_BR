@@ -1,11 +1,25 @@
 import type { Props } from "../types";
 import { renderConsent } from "./consent-page";
 import { handleUpload } from "../upload/handler";
+import { timingSafeEqual } from "../upload/tokens";
+import { MIN_SECRET_LEN } from "../config";
+import { clearAuthFailures, isRateLimited, recordAuthFailure } from "./rate-limit";
 import { log } from "../log";
 import { VERSION } from "../version";
 
 function html(body: string, status = 200): Response {
-  return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
+  return new Response(body, {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      // The consent page has no scripts and only an inline <style>; lock the page
+      // down to that, disallow framing, and pin form submission to this origin.
+      "content-security-policy":
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+      "x-frame-options": "DENY",
+      "referrer-policy": "no-referrer",
+    },
+  });
 }
 
 export default {
@@ -52,13 +66,49 @@ export default {
         return html(renderConsent({ clientName: "MCP client", oauthReqInfo: "", error: "Missing fields." }), 400);
       }
       const oauthReqInfo = JSON.parse(atob(encoded));
-      if (password !== env.AUTH_PASSWORD) {
+
+      // Fail closed if the deployed AUTH_PASSWORD is missing or too weak, rather
+      // than letting a short/empty secret gate the vault. Push-time validation
+      // in scripts/push-secrets.sh is the first line; this is the backstop.
+      if (!env.AUTH_PASSWORD || env.AUTH_PASSWORD.length < MIN_SECRET_LEN) {
+        log.error("auth_misconfigured", { reason: "AUTH_PASSWORD unset or below minimum length" });
+        return html(
+          renderConsent({
+            clientName: "MCP client",
+            oauthReqInfo: encoded,
+            error: "Server authentication is misconfigured. Contact the operator.",
+          }),
+          503,
+        );
+      }
+
+      const ip = req.headers.get("cf-connecting-ip") ?? "";
+
+      // Soft brute-force throttle: KV-backed per-IP failed-attempt counter over a
+      // sliding window. KV is eventually consistent so this is a cost-raiser, not
+      // a hard gate — pair it with a Cloudflare WAF rate-limiting rule on
+      // /authorize for production (see SECURITY notes in README).
+      if (await isRateLimited(env.OAUTH_KV, ip)) {
+        log.warn("auth_rate_limited", { ip });
+        return html(
+          renderConsent({
+            clientName: "MCP client",
+            oauthReqInfo: encoded,
+            error: "Too many failed attempts. Try again later.",
+          }),
+          429,
+        );
+      }
+
+      if (!timingSafeEqual(password, env.AUTH_PASSWORD)) {
+        await recordAuthFailure(env.OAUTH_KV, ip);
         log.warn("auth_failed", {
           clientId: oauthReqInfo.clientId,
-          ip: req.headers.get("cf-connecting-ip"),
+          ip,
         });
         return html(renderConsent({ clientName: "MCP client", oauthReqInfo: encoded, error: "Wrong password." }), 401);
       }
+      await clearAuthFailures(env.OAUTH_KV, ip);
       const props: Props = { user: "owner" };
       const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
         request: oauthReqInfo,

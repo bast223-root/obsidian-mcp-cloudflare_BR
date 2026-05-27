@@ -1,5 +1,14 @@
 import type { AttachmentsMoveWithNote, AttachmentsPathMode, VaultConfig } from "./types";
 
+/**
+ * Minimum length for the AUTH_PASSWORD and UPLOAD_TOKEN secrets. Both gate the
+ * whole service (and UPLOAD_TOKEN is also the HMAC key for signed upload links),
+ * so a short value is a brute-force liability. Enforced at runtime (the handlers
+ * fail closed if a configured secret is shorter) AND at push time in
+ * `scripts/push-secrets.sh` — keep the two in sync. 32+ chars is recommended.
+ */
+export const MIN_SECRET_LEN = 16;
+
 const PATH_MODES: AttachmentsPathMode[] = [
   "per_note_subfolder",
   "vault_default",

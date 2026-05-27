@@ -317,6 +317,10 @@ export async function patchNote(
   }>
 > {
   if (args.old_str === args.new_str) return err("no_op", { path: args.path });
+  // An empty old_str would make body.split("") match between every character,
+  // yielding count === body.length and rewriting the entire file. Reject it
+  // before the split rather than silently corrupting the note.
+  if (args.old_str === "") return err("empty_old_str", { path: args.path });
 
   const body = await c.get(args.path);
   if (body === null) return err("not_found", { path: args.path });

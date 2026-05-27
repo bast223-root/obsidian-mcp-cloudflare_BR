@@ -11,8 +11,9 @@ const poolOptions = {
     bindings: {
       VAULT_PREFIX: "",
       DAILY_NOTE_PATH_TEMPLATE: "Daily Notes/{{YYYY-MM-DD}}.md",
-      AUTH_PASSWORD: "test-password",
-      UPLOAD_TOKEN: "test-upload-secret",
+      // Both must be >= MIN_SECRET_LEN (16); the handlers fail closed otherwise.
+      AUTH_PASSWORD: "test-password-0123456789",
+      UPLOAD_TOKEN: "test-upload-secret-0123456789",
       SERVICE_BASE_URL: "https://vault.example.test",
     },
   },

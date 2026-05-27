@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Consent page XSS fixed.** `src/auth/consent-page.ts` now HTML-escapes all interpolated values (`clientName`, `error`, `oauthReqInfo`). The consent/error responses are served with `Content-Security-Policy: default-src 'none'`, `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`.
+- **Brute-force throttle on `/authorize`.** A KV-backed per-IP failed-attempt counter (`src/auth/rate-limit.ts`) returns HTTP 429 after 10 failures within a 15-minute sliding window. KV is eventually consistent, so a Cloudflare WAF rate-limiting rule on `/authorize` is still recommended for a hard guarantee (documented in README "Security model").
+- **Timing-safe password comparison.** `AUTH_PASSWORD` is now compared with `timingSafeEqual` instead of `===`.
+- **Minimum secret length (16 chars) enforced.** `npm run secrets:push` refuses to push an `AUTH_PASSWORD`/`UPLOAD_TOKEN` shorter than `MIN_SECRET_LEN` (16), and both handlers fail closed (HTTP 503) if a deployed secret is below the floor. 32+ random chars recommended.
+
+### Fixed
+
+- `patch_note` now rejects an empty `old_str` (`empty_old_str`) instead of treating `body.split("")` as a match between every character and rewriting the entire note.
+
 ## [0.11.0] - 2026-05-26
 
 ### Changed

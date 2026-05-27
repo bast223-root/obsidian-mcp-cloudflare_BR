@@ -327,6 +327,15 @@ describe("note tools", () => {
     expect(r).toEqual({ ok: false, reason: "no_op", path: "n.md" });
   });
 
+  it("patchNote rejects an empty old_str instead of rewriting the whole note", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "hello world");
+    const r = await patchNote(c, cfg, { path: "n.md", old_str: "", new_str: "X" });
+    expect(r).toEqual({ ok: false, reason: "empty_old_str", path: "n.md" });
+    // The note must be untouched.
+    expect(await c.get("n.md")).toBe("hello world");
+  });
+
   // Regression: String.prototype.replace(string, string) interprets $`, $', $&,
   // $$, and $n in the replacement. We use parts.join instead so new_str is
   // written verbatim. Without this guard a new_str like "`$\``" (regex

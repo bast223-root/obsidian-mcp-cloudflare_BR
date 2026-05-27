@@ -23,6 +23,14 @@ if [[ ! -f "$SECRETS_FILE" ]]; then
   exit 1
 fi
 
+# Reject weak secrets before they ever reach Cloudflare. AUTH_PASSWORD gates the
+# whole MCP and UPLOAD_TOKEN doubles as the HMAC key for signed upload links, so
+# both should be long, high-entropy strings (recommend 32+ random chars, e.g.
+# `openssl rand -base64 32`). 16 is the floor; the check runs on the *resolved*
+# value so 1Password references are validated too. This only blocks new pushes —
+# it never touches an already-deployed secret.
+MIN_SECRET_LEN=16
+
 # Keep in sync with .secrets.env.example. Order doesn't matter; we look each up.
 # AUTH_PASSWORD is required; UPLOAD_TOKEN is optional (blank/unset = upload disabled).
 SECRETS=(AUTH_PASSWORD UPLOAD_TOKEN)
@@ -83,6 +91,12 @@ for name in "${SECRETS[@]}"; do
     printf 'skip: %s not set in %s\n' "$name" "$SECRETS_FILE" >&2
     skipped=$((skipped + 1))
     continue
+  fi
+
+  if (( ${#value} < MIN_SECRET_LEN )); then
+    printf 'error: %s resolved to %d chars; minimum is %d. Use a longer, high-entropy value (e.g. `openssl rand -base64 32`).\n' \
+      "$name" "${#value}" "$MIN_SECRET_LEN" >&2
+    exit 1
   fi
 
   printf 'pushing %s… ' "$name"

@@ -168,6 +168,16 @@ The initial seed on a cold DO is still O(N) — one R2 GET per note in the vault
 
 `create_note`, `replace_note`, `replace_body`, and `append_to_daily_note` perform a head-or-read followed by a put without any concurrency guard. In single-user MCP usage this is dormant — there's only ever one writer — but if two MCP clients ran concurrently, both could observe "no existing note", both could put, and the last write would silently win. Tracked for a future fix using R2 conditional writes (`onlyIf: { etagMatches }`).
 
+## Security model
+
+This is a **single-user** server: one shared `AUTH_PASSWORD` gates the OAuth `/authorize` flow, and one `UPLOAD_TOKEN` gates the public `/upload` endpoint (and signs single-use upload links). There are no per-user accounts. Treat both secrets as production credentials.
+
+- **Secret strength.** `AUTH_PASSWORD` protects the whole MCP; `UPLOAD_TOKEN` doubles as the HMAC key for signed upload links. Use long, high-entropy values — **32+ random chars** (`openssl rand -base64 32`). `npm run secrets:push` **rejects any secret under 16 chars** before it reaches Cloudflare. Rotate via `npx wrangler secret put …` (see [Day-2 operations](#day-2-operations)); rotating `UPLOAD_TOKEN` invalidates all outstanding signed upload links.
+- **Brute-force protection.** `/authorize` POST has a built-in soft throttle: a KV-backed per-IP failed-attempt counter that returns HTTP 429 after 10 failures within a 15-minute sliding window (`src/auth/rate-limit.ts`). KV is eventually consistent, so for a hard guarantee add a **[Cloudflare WAF rate-limiting rule](https://developers.cloudflare.com/waf/rate-limiting-rules/)** on the `/authorize` (and `/upload`) paths — that's the recommended production layer. The `/upload` endpoint relies on `UPLOAD_TOKEN` entropy plus single-use link `jti` tracking; pair it with a WAF rule too if exposed broadly.
+- **Consent page hardening.** The OAuth consent page HTML-escapes all interpolated values (client name, error text) and is served with `Content-Security-Policy: default-src 'none'`, `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`.
+- **Data at rest is unencrypted in R2.** Remotely Save's end-to-end encryption must be off for the Worker to index/serve notes (see [caveat above](#end-to-end-encryption-must-be-off-in-remotely-save)). Confidentiality therefore rests entirely on the R2 bucket being private and the OAuth gate. This is a deliberate tradeoff for a personal vault — do not store secrets you can't accept living in plaintext in your own R2 bucket.
+- **SSRF surface (`upload_attachment_url`).** The server-side URL fetch is **default-closed**: with `ATTACHMENT_FETCH_HOST_ALLOWLIST` empty it fetches from no host. When you populate it, **list only specific, trusted hostnames** — a broad entry lets prompt injection steer the Worker to fetch attacker-chosen URLs. A private-IP/localhost denylist backstops the allowlist, and the host is re-validated on every redirect hop, but the allowlist is the real boundary: keep it tight.
+
 ## Attachments
 
 Six tools (added in the unreleased line after 0.7.0) expose the vault's binary files — images, PDFs, and other configured types — which Remotely Save already syncs into R2 alongside the markdown. This lets Claude ingest a pasted screenshot, pull a referenced asset from a URL, and read back an embedded image or PDF.

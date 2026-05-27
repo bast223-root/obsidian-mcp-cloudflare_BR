@@ -1,4 +1,4 @@
-import { buildVaultConfig } from "../config";
+import { MIN_SECRET_LEN, buildVaultConfig } from "../config";
 import { log } from "../log";
 import { R2Client } from "../vault/r2-client";
 import {
@@ -131,6 +131,15 @@ export async function handleUpload(req: Request, env: Env): Promise<Response | n
     return req.method === "GET"
       ? html("<h1>Upload disabled</h1><p>Set the UPLOAD_TOKEN secret to enable.</p>", 503)
       : json({ ok: false, reason: "upload_disabled" }, 503);
+  }
+
+  // Fail closed on a configured-but-weak token: it's also the HMAC key for signed
+  // links, so a short value undermines both auth and link integrity.
+  if (env.UPLOAD_TOKEN.length < MIN_SECRET_LEN) {
+    log.error("upload_misconfigured", { reason: "UPLOAD_TOKEN below minimum length" });
+    return req.method === "GET"
+      ? html("<h1>Upload misconfigured</h1><p>UPLOAD_TOKEN is too short; contact the operator.</p>", 503)
+      : json({ ok: false, reason: "upload_misconfigured" }, 503);
   }
 
   if (req.method === "GET") return html(await renderGetPage(req, env, url));
