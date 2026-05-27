@@ -114,7 +114,12 @@ npx wrangler deploy                       # redeploy after code changes
 npx wrangler tail                         # stream live logs
 npm test                                  # run the vitest suite
 npx tsc --noEmit                          # type check
+curl https://<your-host>/health           # liveness + deployed version
 ```
+
+### Health check
+
+`GET /health` is an unauthenticated endpoint returning `{"ok": true, "service": "obsidian-mcp", "version": "<package.json version>"}`. It's served by the main Worker, so it reports the **deployed** version immediately — useful for confirming a deploy landed and for uptime monitoring. Note this is independent of the Durable Object's tool registry, which can still serve the previous version's tools until it cycles (see the caching caveat below).
 
 ### Local development
 

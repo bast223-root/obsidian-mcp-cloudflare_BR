@@ -2,6 +2,7 @@ import type { Props } from "../types";
 import { renderConsent } from "./consent-page";
 import { handleUpload } from "../upload/handler";
 import { log } from "../log";
+import { VERSION } from "../version";
 
 function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
@@ -9,13 +10,24 @@ function html(body: string, status = 200): Response {
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
+    const url = new URL(req.url);
+
+    // Unauthenticated liveness/version probe. Runs in the main Worker, so it
+    // reflects the *deployed* version immediately (independent of the Durable
+    // Object's tool-registry cache). Handy for `curl …/health` deploy checks.
+    if (url.pathname === "/health") {
+      return new Response(JSON.stringify({ ok: true, service: "obsidian-mcp", version: VERSION }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
     // The binary upload endpoint shares this public (non-OAuth) handler. It
     // returns null for any path other than /upload, so /authorize below is
     // unaffected.
     const upload = await handleUpload(req, env);
     if (upload) return upload;
 
-    const url = new URL(req.url);
     if (url.pathname !== "/authorize") {
       log.debug("non_oauth_path", { method: req.method, path: url.pathname });
       return new Response("not found", { status: 404 });
