@@ -12,10 +12,21 @@ function html(body: string, status = 200): Response {
     status,
     headers: {
       "content-type": "text/html; charset=utf-8",
-      // The consent page has no scripts and only an inline <style>; lock the page
-      // down to that, disallow framing, and pin form submission to this origin.
+      // The consent page has no first-party scripts and only an inline <style>.
+      // Lock everything to 'none' except: the inline style, and Cloudflare's
+      // auto-injected Web Analytics beacon (script from static.cloudflareinsights.com
+      // + its RUM POST to cloudflareinsights.com) — without these the zone's
+      // injected beacon trips CSP. Inline/arbitrary scripts stay blocked, so the
+      // XSS posture holds. Framing and <base> are denied.
+      //
+      // NOTE: deliberately no `form-action`. The OAuth flow submits this form and
+      // the server 302s to the client's callback (e.g. claude.ai); browsers
+      // enforce form-action against that redirect target, and the callback origin
+      // varies per registered client, so any allowlist would break authorization.
+      // Form-action adds little here anyway: values are HTML-escaped (no form
+      // injection) and there are no scripts to navigate.
       "content-security-policy":
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+        "default-src 'none'; script-src https://static.cloudflareinsights.com; style-src 'unsafe-inline'; connect-src https://cloudflareinsights.com; frame-ancestors 'none'; base-uri 'none'",
       "x-frame-options": "DENY",
       "referrer-policy": "no-referrer",
     },
@@ -61,6 +72,15 @@ function consentResponse(
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
+
+    // Never serve the password / upload-token endpoints over plaintext HTTP.
+    // The zone-level "Always Use HTTPS" setting is the primary control (and the
+    // only one that also covers /mcp and /token, which the OAuth library handles
+    // directly); this is an in-code backstop for the routes this handler owns.
+    if (url.protocol === "http:") {
+      url.protocol = "https:";
+      return Response.redirect(url.toString(), 308);
+    }
 
     // Unauthenticated liveness/version probe. Runs in the main Worker, so it
     // reflects the *deployed* version immediately (independent of the Durable

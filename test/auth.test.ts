@@ -59,7 +59,18 @@ describe("POST /authorize", () => {
     const res = await AuthHandler.fetch(await postAuthorize("wrong", "203.0.113.1"), env);
     expect(res.status).toBe(401);
     expect(res.headers.get("x-frame-options")).toBe("DENY");
-    expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    const csp = res.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("frame-ancestors 'none'");
+    // Cloudflare's auto-injected analytics beacon must be allowed, and the
+    // OAuth-breaking form-action restriction must be absent.
+    expect(csp).toContain("https://static.cloudflareinsights.com");
+    expect(csp).not.toContain("form-action");
+  });
+
+  it("redirects plaintext HTTP to HTTPS (308)", async () => {
+    const res = await AuthHandler.fetch(new Request("http://obsv.scriptek.com/authorize"), env);
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toBe("https://obsv.scriptek.com/authorize");
   });
 
   it("rejects a tampered (unsigned) oauthReqInfo blob with 400", async () => {
