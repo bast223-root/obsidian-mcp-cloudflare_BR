@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-05-27
+
 ### Security
 
 - **Consent page XSS fixed.** `src/auth/consent-page.ts` now HTML-escapes all interpolated values (`clientName`, `error`, `oauthReqInfo`). The consent/error responses are served with a strict `Content-Security-Policy` (`default-src 'none'`, `base-uri 'none'`, inline style only, scripts limited to Cloudflare's auto-injected analytics beacon, no `form-action` so the OAuth redirect isn't blocked), `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`.
@@ -252,7 +254,8 @@ Initial release.
 - End-to-end deployment verified: Obsidian (Mac) ↔ Remotely Save ↔ R2 ↔ Worker ↔ Claude.ai. Note creation through Claude.ai was confirmed and the new note synced back to Obsidian on the next Remotely Save interval.
 - Documented gotchas encountered during build: `vitest-pool-workers` + space-in-path, `custom_domain` clashes with pre-existing DNS records, 30-minute negative DNS cache after record deletion.
 
-[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.8.0...v0.9.0
