@@ -95,6 +95,24 @@ npx wrangler secret put UPLOAD_TOKEN
 
 Paste a second long random string. Leave it unset to keep the `/upload` endpoint and `create_upload_link` tool disabled.
 
+#### Alternative: manage secrets from 1Password (`.secrets.env` + `npm run secrets:push`)
+
+Instead of typing values interactively, copy `.secrets.env.example` to `.secrets.env` (gitignored) and put either literal values or 1Password references (`op://<vault>/<item>/<field>`) in it:
+
+```dotenv
+AUTH_PASSWORD="op://Personal/Obsidian MCP/password"
+UPLOAD_TOKEN=          # blank = upload stays disabled
+```
+
+Then push them all to Cloudflare in one shot:
+
+```bash
+op signin              # or export OP_SERVICE_ACCOUNT_TOKEN
+npm run secrets:push   # resolves op:// refs, pipes each value to `wrangler secret put`
+```
+
+`scripts/push-secrets.sh` resolves any `op://` reference via the `op` CLI (literals pass through unchanged) and pipes each value over stdin, so no secret lands in argv or scrollback. This is separate from `.dev.vars`, which keeps throwaway local-dev values (e.g. `AUTH_PASSWORD=local-dev-only`) for `wrangler dev`. Re-run after rotating a secret; verify with `npx wrangler secret list`.
+
 ### 6. Test and dry-run
 
 ```bash

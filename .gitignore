@@ -2,6 +2,7 @@ node_modules/
 .wrangler/
 .dev.vars
 .env
+.secrets.env
 wrangler.jsonc
 worker-configuration.d.ts
 dist/

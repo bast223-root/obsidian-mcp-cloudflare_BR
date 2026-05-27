@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `npm run secrets:push` (`scripts/push-secrets.sh`) — pushes production Workers secrets to Cloudflare from a gitignored `.secrets.env`, resolving 1Password `op://` references via the `op` CLI and piping each value over stdin to `wrangler secret put` (no secret in argv/scrollback). Optional `OP_ACCOUNT` (env var or a line in `.secrets.env`) disambiguates which 1Password account owns the referenced vault. `.secrets.env` is separate from `.dev.vars`, which keeps throwaway local-dev literals for `wrangler dev`. New `.secrets.env.example` documents the shape; `DEPLOYMENT.md` covers the flow alongside the manual `wrangler secret put` steps.
+
 ## [0.10.0] - 2026-05-24
 
 ### Fixed
