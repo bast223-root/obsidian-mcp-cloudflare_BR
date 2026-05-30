@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-05-30
+
 ### Fixed
 
 - **Upload page file picker no longer blocks allowed file types on mobile.** The `GET /upload` file input had a hardcoded `accept="image/*,application/pdf"`; mobile browsers enforce `accept` strictly, so allowed-but-unlisted types (e.g. `.pptx`, `.docx`, `.xlsx`) were greyed out in the picker even though the server accepts them. The `accept` hint is now derived from the server's effective `ATTACHMENT_ALLOWED_EXTENSIONS` allowlist (emitting both the dotted extension and the MIME type, so Android Chrome and iOS Safari both match), and the `csv-or-default` allowlist resolution is centralized (`resolveAttachmentAllowlist`) across the upload handler, embed co-move, and the picker so the three can't drift apart again.
@@ -266,7 +268,8 @@ Initial release.
 - End-to-end deployment verified: Obsidian (Mac) ↔ Remotely Save ↔ R2 ↔ Worker ↔ Claude.ai. Note creation through Claude.ai was confirmed and the new note synced back to Obsidian on the next Remotely Save interval.
 - Documented gotchas encountered during build: `vitest-pool-workers` + space-in-path, `custom_domain` clashes with pre-existing DNS records, 30-minute negative DNS cache after record deletion.
 
-[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.12.2...HEAD
+[0.12.2]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.10.0...v0.11.0
