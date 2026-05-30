@@ -36,6 +36,14 @@ function parseEnv(text) {
   return out;
 }
 
+// KV namespace ids aren't credentials, but echoing the full value into setup
+// output (terminal scrollback / CI logs) is needless. Show enough head+tail to
+// identify which namespace this is without printing the whole id.
+function maskId(id) {
+  if (!id || id.length <= 12) return id;
+  return `${id.slice(0, 8)}…${id.slice(-4)}`;
+}
+
 function runWrangler(args) {
   return execFileSync("npx", ["wrangler", ...args], {
     encoding: "utf8",
@@ -62,7 +70,7 @@ function ensureR2Bucket(name) {
 
 function ensureKvNamespace(env) {
   if (env.OAUTH_KV_ID) {
-    console.log(`KV namespace OAUTH_KV: ${env.OAUTH_KV_ID} (from .env)`);
+    console.log(`KV namespace OAUTH_KV: ${maskId(env.OAUTH_KV_ID)} (from .env)`);
     return;
   }
   process.stdout.write(`KV namespace OAUTH_KV... `);
@@ -84,7 +92,7 @@ function ensureKvNamespace(env) {
     process.exit(1);
   }
   const id = m[1];
-  console.log(`created (${id})`);
+  console.log(`created (${maskId(id)}, written to .env)`);
   appendFileSync(ENV_PATH, `\n# auto-filled by scripts/setup.mjs\nOAUTH_KV_ID=${id}\n`);
   env.OAUTH_KV_ID = id;
 }
