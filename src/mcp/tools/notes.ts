@@ -15,14 +15,13 @@ import {
   splitFrontmatterRaw,
 } from "../../vault/markdown";
 import {
-  DEFAULT_ATTACHMENT_EXTENSIONS,
   attachmentResolutionCandidates,
   dirOf,
   getExtension,
   isUnderDir,
   joinPath,
-  parseExtensionAllowlist,
   relativeForEmbed,
+  resolveAttachmentAllowlist,
 } from "../../vault/attachments";
 
 export async function listNotes(c: R2Client, _cfg: VaultConfig): Promise<string[]> {
@@ -251,11 +250,7 @@ async function comoveAttachments(
   sourceBody: string,
 ): Promise<ComovedAttachment[]> {
   if (cfg.attachmentsMoveWithNote === "never") return [];
-  const allow = parseExtensionAllowlist(
-    cfg.attachmentAllowedExtensions.trim()
-      ? cfg.attachmentAllowedExtensions
-      : DEFAULT_ATTACHMENT_EXTENSIONS,
-  );
+  const allow = resolveAttachmentAllowlist(cfg.attachmentAllowedExtensions);
   const fromDir = dirOf(from);
   const toDir = dirOf(to);
   const moved: ComovedAttachment[] = [];

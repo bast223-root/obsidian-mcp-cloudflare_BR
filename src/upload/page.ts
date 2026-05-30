@@ -40,6 +40,14 @@ export interface UploadPageOptions {
   targetNote?: string;
   /** When set, the link was invalid/expired/used — render a notice, no form. */
   linkError?: string;
+  /**
+   * Value for the file input's `accept` attribute, derived from the server's
+   * extension allowlist (see `buildAcceptAttribute`). Omitted → the picker is
+   * unrestricted (the server still enforces the allowlist). Never hardcode a
+   * narrower list here: mobile browsers enforce `accept` and will grey out
+   * allowed-but-unlisted types like `.pptx`.
+   */
+  accept?: string;
 }
 
 export function renderUploadPage(opts: UploadPageOptions = {}): string {
@@ -81,7 +89,7 @@ export function renderUploadPage(opts: UploadPageOptions = {}): string {
 ${banner}
 <form id="f">
   <label for="file">File</label>
-  <input id="file" name="file" type="file" accept="image/*,application/pdf" required>
+  <input id="file" name="file" type="file"${opts.accept ? ` accept="${escapeHtml(opts.accept)}"` : ""} required>
 ${fields}
   <button id="go" type="submit">Upload</button>
 </form>

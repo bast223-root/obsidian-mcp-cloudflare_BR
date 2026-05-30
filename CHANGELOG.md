@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Upload page file picker no longer blocks allowed file types on mobile.** The `GET /upload` file input had a hardcoded `accept="image/*,application/pdf"`; mobile browsers enforce `accept` strictly, so allowed-but-unlisted types (e.g. `.pptx`, `.docx`, `.xlsx`) were greyed out in the picker even though the server accepts them. The `accept` hint is now derived from the server's effective `ATTACHMENT_ALLOWED_EXTENSIONS` allowlist (emitting both the dotted extension and the MIME type, so Android Chrome and iOS Safari both match), and the `csv-or-default` allowlist resolution is centralized (`resolveAttachmentAllowlist`) across the upload handler, embed co-move, and the picker so the three can't drift apart again.
+
 ## [0.12.1] - 2026-05-30
 
 ### Security

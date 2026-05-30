@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertAllowedExtension,
   attachmentResolutionCandidates,
+  buildAcceptAttribute,
   buildEmbedMarkdown,
   deriveFilenameFromUrl,
   extensionToMime,
@@ -12,11 +13,56 @@ import {
   mimeToExtension,
   parseExtensionAllowlist,
   relativeForEmbed,
+  resolveAttachmentAllowlist,
   resolveAttachmentPath,
   sanitizeFilename,
   validateAttachmentSourceUrl,
 } from "../src/vault/attachments";
 import { makeCfg } from "./_helpers";
+
+describe("resolveAttachmentAllowlist", () => {
+  it("uses the configured CSV when non-empty", () => {
+    const allow = resolveAttachmentAllowlist("png,pptx");
+    expect([...allow].sort()).toEqual(["png", "pptx"]);
+  });
+  it("falls back to the default allowlist when empty or whitespace", () => {
+    expect(resolveAttachmentAllowlist("").has("png")).toBe(true);
+    expect(resolveAttachmentAllowlist("   ").has("pdf")).toBe(true);
+    // default set does not include office types
+    expect(resolveAttachmentAllowlist("").has("pptx")).toBe(false);
+  });
+});
+
+describe("buildAcceptAttribute", () => {
+  it("emits both the dotted extension and the MIME type for known types", () => {
+    const accept = buildAcceptAttribute(new Set(["pptx"]));
+    expect(accept).toBe(
+      ".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    );
+  });
+  it("regression: a configured .pptx is selectable (extension + MIME present)", () => {
+    // The mobile picker bug was a hardcoded accept of image/*,application/pdf
+    // that omitted office types. Driving accept from the allowlist must include
+    // pptx by both extension and MIME so iOS Safari and Android Chrome match.
+    const accept = buildAcceptAttribute(resolveAttachmentAllowlist("png,jpg,pdf,docx,xlsx,pptx"));
+    expect(accept).toContain(".pptx");
+    expect(accept).toContain(
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    );
+  });
+  it("includes the dotted extension even when the MIME is unknown", () => {
+    const accept = buildAcceptAttribute(new Set(["heic"]));
+    expect(accept).toBe(".heic");
+  });
+  it("does not repeat a MIME shared by two extensions (jpg/jpeg)", () => {
+    const accept = buildAcceptAttribute(new Set(["jpg", "jpeg"]));
+    expect(accept).toBe(".jpg,image/jpeg,.jpeg");
+  });
+  it("produces an attribute-safe string (no quotes or angle brackets)", () => {
+    const accept = buildAcceptAttribute(resolveAttachmentAllowlist(""));
+    expect(accept).not.toMatch(/["<>]/);
+  });
+});
 
 describe("extensionToMime / mimeToExtension", () => {
   it("maps known extensions", () => {

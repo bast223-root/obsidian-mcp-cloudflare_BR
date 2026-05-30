@@ -102,6 +102,46 @@ export function parseExtensionAllowlist(csv: string): Set<string> {
 }
 
 /**
+ * Resolve the *effective* attachment allowlist: the configured CSV, or the
+ * built-in default when that CSV is empty. The upload POST handler, the
+ * embed-co-move path, and the upload page's file-picker hint must all agree on
+ * what is allowed, so they all go through here rather than re-inlining the
+ * trim/default rule (which is exactly how the picker drifted out of sync).
+ */
+export function resolveAttachmentAllowlist(configuredCsv: string): Set<string> {
+  return parseExtensionAllowlist(
+    configuredCsv.trim() ? configuredCsv : DEFAULT_ATTACHMENT_EXTENSIONS,
+  );
+}
+
+/**
+ * Build a file-input `accept` value from an extension allowlist. Emits both the
+ * dotted extension (`.pptx`) and, where the MIME is known, the MIME type:
+ * Android Chrome filters the picker on extension, iOS Safari on MIME type, so
+ * listing both is what lets every allowed file through on mobile. Extensions
+ * with no MIME mapping still get their dotted token. The `accept` attribute is
+ * only a picker hint — the server's allowlist remains the authoritative gate —
+ * so a too-broad value is harmless, but a too-narrow one silently blocks
+ * legitimate files on mobile, which is the bug this prevents.
+ */
+export function buildAcceptAttribute(allowlist: Set<string>): string {
+  const tokens: string[] = [];
+  const seen = new Set<string>();
+  const add = (t: string) => {
+    if (!seen.has(t)) {
+      seen.add(t);
+      tokens.push(t);
+    }
+  };
+  for (const ext of allowlist) {
+    add(`.${ext}`);
+    const mime = EXT_TO_MIME[ext];
+    if (mime) add(mime);
+  }
+  return tokens.join(",");
+}
+
+/**
  * Assert a filename's extension is in the allowlist. On success returns the
  * resolved extension and its MIME type; on rejection returns a typed error
  * carrying the offending extension and the sorted allowed set so the AI caller

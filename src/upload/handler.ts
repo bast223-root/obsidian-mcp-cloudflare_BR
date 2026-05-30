@@ -2,9 +2,9 @@ import { MIN_SECRET_LEN, buildVaultConfig } from "../config";
 import { log } from "../log";
 import { R2Client } from "../vault/r2-client";
 import {
-  DEFAULT_ATTACHMENT_EXTENSIONS,
+  buildAcceptAttribute,
   dirOf,
-  parseExtensionAllowlist,
+  resolveAttachmentAllowlist,
   resolveAttachmentPath,
   sanitizeFilename,
 } from "../vault/attachments";
@@ -100,8 +100,14 @@ function statusForReason(reason: string): number {
  * editable form.
  */
 async function renderGetPage(req: Request, env: Env, url: URL): Promise<string> {
+  const cfg = buildVaultConfig(env);
+  // The file picker's accept hint mirrors the server's effective allowlist so
+  // mobile browsers don't grey out allowed types (e.g. .pptx). See the bug note
+  // on UploadPageOptions.accept.
+  const accept = buildAcceptAttribute(resolveAttachmentAllowlist(cfg.attachmentAllowedExtensions));
+
   const linkToken = url.searchParams.get("t");
-  if (!linkToken) return renderUploadPage();
+  if (!linkToken) return renderUploadPage({ accept });
 
   const verified = await verifyUploadToken(env, linkToken);
   if (!verified.ok) return renderUploadPage({ linkError: verified.reason });
@@ -111,7 +117,6 @@ async function renderGetPage(req: Request, env: Env, url: URL): Promise<string> 
   if (scope.dest_path) {
     destination = scope.dest_path;
   } else {
-    const cfg = buildVaultConfig(env);
     const probe = resolveAttachmentPath(cfg, {
       target_note: scope.target_note,
       subfolder: scope.subfolder,
@@ -120,7 +125,7 @@ async function renderGetPage(req: Request, env: Env, url: URL): Promise<string> 
     const dir = probe.ok ? dirOf(probe.value) : "";
     destination = `${dir || "(vault root)"}/`;
   }
-  return renderUploadPage({ destination, targetNote: scope.target_note });
+  return renderUploadPage({ destination, targetNote: scope.target_note, accept });
 }
 
 export async function handleUpload(req: Request, env: Env): Promise<Response | null> {
@@ -194,9 +199,7 @@ export async function handleUpload(req: Request, env: Env): Promise<Response | n
 
   const cfg = buildVaultConfig(env);
   const c = new R2Client(env.VAULT, cfg);
-  const allow = parseExtensionAllowlist(
-    cfg.attachmentAllowedExtensions.trim() ? cfg.attachmentAllowedExtensions : DEFAULT_ATTACHMENT_EXTENSIONS,
-  );
+  const allow = resolveAttachmentAllowlist(cfg.attachmentAllowedExtensions);
   const overwrite = form.get("overwrite") === "true";
 
   if (scope.dest_path) {
