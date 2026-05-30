@@ -37,8 +37,11 @@ function parseEnv(text) {
 }
 
 // KV namespace ids aren't credentials, but echoing the full value into setup
-// output (terminal scrollback / CI logs) is needless. Show enough head+tail to
-// identify which namespace this is without printing the whole id.
+// output (terminal scrollback / CI logs) is needless. For the freshly-created
+// id we show enough head+tail to identify the namespace without printing it
+// whole. For the already-configured case we don't echo it at all — it's already
+// in .env, and routing the OAUTH_KV_ID value (any substring of it) into a log
+// trips CodeQL's clear-text-logging taint, so we keep that value out of logs.
 function maskId(id) {
   if (!id || id.length <= 12) return id;
   return `${id.slice(0, 8)}…${id.slice(-4)}`;
@@ -70,7 +73,7 @@ function ensureR2Bucket(name) {
 
 function ensureKvNamespace(env) {
   if (env.OAUTH_KV_ID) {
-    console.log(`KV namespace OAUTH_KV: ${maskId(env.OAUTH_KV_ID)} (from .env)`);
+    console.log(`KV namespace OAUTH_KV: configured (from .env)`);
     return;
   }
   process.stdout.write(`KV namespace OAUTH_KV... `);

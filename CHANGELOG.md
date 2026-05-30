@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **Bumped transitive `qs` to 6.15.2** (lockfile only) to clear GHSA-affected `qs` 6.11.1–6.15.1 (remotely triggerable DoS via `qs.stringify` on null/undefined entries in comma-format arrays). Pulled in via `@modelcontextprotocol/sdk` → `express`; not exercised by the deployed Worker (which uses its own routing, not express's query parser), but flagged by Dependabot. Patch-level, no API change.
-- **`scripts/setup.mjs` no longer prints the full KV namespace id.** A KV namespace id is a non-secret resource identifier (not a credential), but setup output can land in terminal scrollback / CI logs, so the id is now partially masked (`first 8…last 4`) in both the "from .env" and freshly-created log lines. Cleared the corresponding `js/clear-text-logging` code-scanning alert.
+- **`scripts/setup.mjs` no longer logs the configured KV namespace id.** A KV namespace id is a non-secret resource identifier (not a credential), but setup output can land in terminal scrollback / CI logs. The already-configured "from .env" line no longer echoes the id at all (it's already in `.env`); the freshly-created line shows a partial id (`first 8…last 4`) to confirm what was made. Clears the `js/clear-text-logging` code-scanning alert at the source rather than relying on a dismissal.
 - **Dev-tooling bump** (`@cloudflare/vitest-pool-workers` → 0.16.10, dedupes `wrangler` to 4.95.0) to clear the transitive `ws` uninitialized-memory-disclosure advisory (GHSA-58qx-3vcg-4xpx). Dev/test/deploy tooling only — not bundled into the deployed Worker. `npm audit` now reports 0 vulnerabilities.
 
 ## [0.12.0] - 2026-05-27
