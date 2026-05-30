@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-05-30
+
 ### Security
 
 - **Bumped transitive `qs` to 6.15.2** (lockfile only) to clear GHSA-affected `qs` 6.11.1–6.15.1 (remotely triggerable DoS via `qs.stringify` on null/undefined entries in comma-format arrays). Pulled in via `@modelcontextprotocol/sdk` → `express`; not exercised by the deployed Worker (which uses its own routing, not express's query parser), but flagged by Dependabot. Patch-level, no API change.
@@ -260,7 +262,8 @@ Initial release.
 - End-to-end deployment verified: Obsidian (Mac) ↔ Remotely Save ↔ R2 ↔ Worker ↔ Claude.ai. Note creation through Claude.ai was confirmed and the new note synced back to Obsidian on the next Remotely Save interval.
 - Documented gotchas encountered during build: `vitest-pool-workers` + space-in-path, `custom_domain` clashes with pre-existing DNS records, 30-minute negative DNS cache after record deletion.
 
-[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.9.0...v0.10.0
