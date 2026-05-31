@@ -1252,6 +1252,81 @@ describe("attachment tools", () => {
     );
   });
 
+  it("moveAttachment rolls back with no partial commit when an embed rewrite fails", async () => {
+    // Defect B: the irreversible byte-move must NOT commit before the embed
+    // rewrite. Force a c.put failure on a referrer that sorts AFTER an already-
+    // rewritten one, so the rollback must also restore the earlier note.
+    const base = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(base);
+    await seed(base, "files/img.png", PNG_BYTES, "image/png");
+    const seedNote = async (path: string, body: string) => {
+      const etag = await base.put(path, body);
+      store.upsert({ path, etag, body, tags: [], wikilinks: extractWikilinks(body) });
+    };
+    await seedNote("A.md", "see ![[files/img.png]] here");
+    await seedNote("Z.md", "ref ![[files/img.png]]");
+
+    // findReferrers returns sorted paths, so A.md is rewritten first, then Z.md
+    // throws — exercising both the byte rollback and the already-rewritten-note
+    // restore.
+    class FailingPut extends R2Client {
+      async put(path: string, content: string) {
+        if (path === "Z.md") throw new Error("simulated R2 put failure");
+        return super.put(path, content);
+      }
+    }
+    const c = new FailingPut(env.VAULT, cfg);
+
+    const r = await moveAttachment(c, cfg, index, {
+      from_path: "files/img.png",
+      to_path: "Archive/img.png",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("embed_rewrite_failed");
+
+    // Nothing committed: source present, destination cleaned up, both notes intact.
+    expect(await base.getBinary("files/img.png")).not.toBeNull();
+    expect(await base.getBinary("Archive/img.png")).toBeNull();
+    expect(await base.get("A.md")).toBe("see ![[files/img.png]] here");
+    expect(await base.get("Z.md")).toBe("ref ![[files/img.png]]");
+  });
+
+  it("moveAttachment rollback restores clobbered destination bytes when overwriting", async () => {
+    // overwrite:true clobbers a pre-existing destination. If a later embed
+    // rewrite fails, the rollback must RESTORE the original destination bytes,
+    // not just delete the copy (which would lose the clobbered file's data).
+    const base = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(base);
+    await seed(base, "files/a.png", PNG_BYTES, "image/png");
+    await seed(base, "files/b.png", PDF_BYTES, "application/pdf"); // distinct prior dest bytes
+    const body = "see ![[files/a.png]]";
+    const etag = await base.put("Ref.md", body);
+    store.upsert({ path: "Ref.md", etag, body, tags: [], wikilinks: extractWikilinks(body) });
+
+    class FailingPut extends R2Client {
+      async put(path: string, content: string) {
+        if (path === "Ref.md") throw new Error("simulated R2 put failure");
+        return super.put(path, content);
+      }
+    }
+    const c = new FailingPut(env.VAULT, cfg);
+
+    const r = await moveAttachment(c, cfg, index, {
+      from_path: "files/a.png",
+      to_path: "files/b.png",
+      overwrite: true,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("embed_rewrite_failed");
+
+    // Destination restored to its ORIGINAL (PDF) bytes; source still present.
+    const dest = await base.getBinary("files/b.png");
+    expect(dest).not.toBeNull();
+    expect([...new Uint8Array(dest!.body)]).toEqual(PDF_BYTES);
+    expect(await base.getBinary("files/a.png")).not.toBeNull();
+    expect(await base.get("Ref.md")).toBe("see ![[files/a.png]]");
+  });
+
   it("moveAttachment reports bare-filename referrers without rewriting them", async () => {
     // A `![[img.png]]` embed (no folder) is resolved by Obsidian by name
     // regardless of where the file lives, so it self-heals on move and is left

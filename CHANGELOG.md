@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`move_attachment` is no longer non-atomic — the irreversible byte-delete now runs last.** Previously the tool copied bytes to the new path, **deleted the old object**, and only then rewrote embeds in referring notes — so any failure in the rewrite loop (an R2 read/write error on a referrer) stranded a committed byte-move with notes still pointing at the now-missing path, and the call surfaced an error a retrying caller could double-handle. The byte-delete of `from_path` is now deferred until after the copy *and* every embed rewrite succeed; on any rewrite failure the move rolls back (restores notes already rewritten this call, then undoes the destination copy — restoring prior bytes when `overwrite` clobbered an existing object, else deleting the copy) and returns `reason='embed_rewrite_failed'`, leaving the vault in its pre-move state. R2 has no cross-object transaction, so rollback is best-effort, but a rewrite-step failure can no longer leave a stranded half-move. (Defect B from the embed-rewrite bug note; Defect A — the `findReferrers` LIKE crash — was fixed in 0.13.0.)
+
 ### Changed
 
 - **BREAKING: the daily-note tools are renamed and generalized to all periodic cadences.** `get_or_create_daily_note` → **`periodic_note_get_or_create`** and `append_to_daily_note` → **`periodic_note_append`**, each now taking a required `period` argument (`daily`/`weekly`/`monthly`/`quarterly`/`yearly`). The optional `date` is an anchor (`YYYY-MM-DD`, default today) bucketed into the week/month/quarter/year containing it. The old tool names are removed — update any saved chats/automations, and reconnect clients to refresh the tool registry (see the README cache gotcha).
