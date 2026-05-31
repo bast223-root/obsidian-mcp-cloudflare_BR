@@ -1,17 +1,40 @@
 import { describe, expect, it } from "vitest";
-import { SqlStore, escapeLikePattern, type NoteRow } from "../src/vault/index-store";
+import {
+  MAX_LIKE_PATTERN_BYTES,
+  SqlStore,
+  escapeLikePattern,
+  linkTail,
+  searchPatternBytes,
+  type NoteRow,
+} from "../src/vault/index-store";
 
 /**
  * Minimal SQLite-tag emulator backed by JS Maps. Implements only the
  * subset of SQL that SqlStore actually uses, so SqlStore's exact LIKE
  * semantics (with the `\` escape) can be verified without pulling in
  * better-sqlite3.
+ *
+ * It also enforces Cloudflare DO-SQLite's 50-byte LIKE/GLOB pattern limit
+ * (throwing the same "pattern too complex" error the real runtime does), so a
+ * query that builds an over-long pattern fails here exactly as it would in
+ * production — this is what makes the findReferrers / search tests real
+ * regression oracles rather than green-by-construction.
  */
 type Row = Record<string, string | number | boolean | null>;
+type WikilinkRow = { source: string; target: string; target_tail: string };
 class FakeSqlite {
   notes = new Map<string, Row>();
   tags = new Set<string>();
-  wikilinks = new Set<string>();
+  // Keyed by `source\ttarget` (the table's primary key).
+  wikilinks = new Map<string, WikilinkRow>();
+  // Simulate a DO created before the target_tail column existed. When false,
+  // PRAGMA omits the column until SqlStore.migrate() runs ALTER TABLE.
+  hasTailColumn: boolean;
+  alterCount = 0;
+
+  constructor(opts: { legacy?: boolean } = {}) {
+    this.hasTailColumn = !opts.legacy;
+  }
 
   tag: <T = Row>(strings: TemplateStringsArray, ...values: (string | number | boolean | null)[]) => T[] = ((
     strings: TemplateStringsArray,
@@ -21,8 +44,32 @@ class FakeSqlite {
     return this.run(sql, values);
   }) as never;
 
+  /** Reject a LIKE/GLOB pattern over the 50-byte DO-SQLite limit, mirroring the
+   * real runtime's error so over-long patterns fail in tests too. */
+  private assertPatternFits(pattern: string): void {
+    if (new TextEncoder().encode(pattern).length > MAX_LIKE_PATTERN_BYTES) {
+      throw new Error("LIKE or GLOB pattern too complex: SQLITE_ERROR");
+    }
+  }
+
   private run(sql: string, params: (string | number | boolean | null)[]): Row[] {
     if (sql.startsWith("CREATE TABLE") || sql.startsWith("CREATE INDEX")) return [];
+    if (sql.startsWith("PRAGMA table_info(vault_wikilinks)")) {
+      const cols = ["source", "target"];
+      if (this.hasTailColumn) cols.push("target_tail");
+      return cols.map((name) => ({ name }));
+    }
+    if (sql.startsWith("ALTER TABLE vault_wikilinks ADD COLUMN target_tail")) {
+      this.alterCount++;
+      this.hasTailColumn = true;
+      return [];
+    }
+    if (sql.startsWith("UPDATE vault_wikilinks SET target_tail = ?")) {
+      const [tail, source, target] = params as string[];
+      const row = this.wikilinks.get(`${source}\t${target}`);
+      if (row) row.target_tail = tail;
+      return [];
+    }
     if (sql.startsWith("INSERT OR REPLACE INTO vault_notes")) {
       const [path, etag, body, body_lower] = params as string[];
       this.notes.set(path, { path, etag, body, body_lower });
@@ -40,12 +87,13 @@ class FakeSqlite {
     }
     if (sql.startsWith("DELETE FROM vault_wikilinks WHERE source = ?")) {
       const [p] = params as string[];
-      for (const k of this.wikilinks) if (k.startsWith(p + "\t")) this.wikilinks.delete(k);
+      for (const k of this.wikilinks.keys()) if (k.startsWith(p + "\t")) this.wikilinks.delete(k);
       return [];
     }
     if (sql.startsWith("INSERT OR IGNORE INTO vault_wikilinks")) {
-      const [source, target] = params as string[];
-      this.wikilinks.add(`${source}\t${target}`);
+      const [source, target, target_tail] = params as string[];
+      const key = `${source}\t${target}`;
+      if (!this.wikilinks.has(key)) this.wikilinks.set(key, { source, target, target_tail: target_tail ?? "" });
       return [];
     }
     if (sql.startsWith("DELETE FROM vault_notes WHERE path = ?")) {
@@ -53,11 +101,16 @@ class FakeSqlite {
       this.notes.delete(p);
       return [];
     }
+    if (sql.startsWith("SELECT source, target FROM vault_wikilinks")) {
+      return [...this.wikilinks.values()].map((r) => ({ source: r.source, target: r.target }));
+    }
     if (sql.startsWith("SELECT path, etag FROM vault_notes")) {
       return [...this.notes.values()].map((r) => ({ path: r.path, etag: r.etag }));
     }
     if (sql.startsWith("SELECT path, body FROM vault_notes WHERE body_lower LIKE ? ESCAPE")) {
       const [bodyPattern, pathPattern, limit] = params as [string, string, number];
+      this.assertPatternFits(bodyPattern);
+      this.assertPatternFits(pathPattern);
       const bodyRx = likeToRegex(bodyPattern, "\\");
       const pathRx = likeToRegex(pathPattern, "\\");
       const out: Row[] = [];
@@ -78,11 +131,25 @@ class FakeSqlite {
       return [...found].sort().map((t) => ({ tag: t }));
     }
     if (sql.startsWith("SELECT DISTINCT source FROM vault_wikilinks WHERE target = ?")) {
-      const [target] = params as string[];
+      // findReferrers is the multi-clause form (it references target_tail);
+      // backlinks is the single-target form. Both are pure equality — no LIKE.
+      const isFindReferrers = sql.includes("target_tail = ?");
       const sources = new Set<string>();
-      for (const k of this.wikilinks) {
-        const [s, t] = k.split("\t");
-        if (t === target) sources.add(s);
+      if (isFindReferrers) {
+        const [basename, pathNoExt, fullPath, tail] = params as string[];
+        for (const r of this.wikilinks.values()) {
+          if (
+            r.target === basename ||
+            r.target === pathNoExt ||
+            r.target === fullPath ||
+            r.target_tail === tail
+          ) {
+            sources.add(r.source);
+          }
+        }
+      } else {
+        const [target] = params as string[];
+        for (const r of this.wikilinks.values()) if (r.target === target) sources.add(r.source);
       }
       return [...sources].sort().map((s) => ({ source: s }));
     }
@@ -184,5 +251,104 @@ describe("SqlStore", () => {
     expect(store.getEtags().has("a.md")).toBe(false);
     expect(store.tags()).toEqual(["alpha"]);
     expect(store.backlinks("T1")).toEqual(["b.md"]);
+  });
+
+  it("findReferrers matches bare-name, full-path, and partial-path (target_tail) references", () => {
+    const { store } = newStore();
+    store.upsert(makeRow("ref-bare.md", "x", [], ["old"]));
+    store.upsert(makeRow("ref-full.md", "x", [], ["Folder/old"]));
+    store.upsert(makeRow("ref-partial.md", "x", [], ["deeper/Folder/old"]));
+    store.upsert(makeRow("ref-other.md", "x", [], ["unrelated"]));
+    // A different file whose last segment merely *contains* the name must NOT match.
+    store.upsert(makeRow("ref-decoy.md", "x", [], ["Folder/not-old"]));
+
+    const referrers = store.findReferrers("Folder/old.md", "old", "Folder/old");
+    expect(referrers).toEqual(["ref-bare.md", "ref-full.md", "ref-partial.md"]);
+  });
+
+  it("findReferrers does NOT throw on a long basename (no LIKE pattern is built)", () => {
+    // Regression: the embed-rewrite lookup used to be `target LIKE '%/'||name`,
+    // which exceeds DO-SQLite's 50-byte pattern limit for a long filename and
+    // threw "pattern too complex" — after the R2 byte-move had already
+    // committed. The target_tail equality path has no pattern, so any length
+    // is fine. This basename alone is 55 bytes; the old `%/`+name LIKE was 57.
+    const basename = "MSPs-Practical-Guide-to-CIS-Control-Implementation.pdf";
+    expect(basename.length).toBeGreaterThan(MAX_LIKE_PATTERN_BYTES);
+    const { store } = newStore();
+    store.upsert(makeRow("note.md", "x", [], [`Knowledge/Security/files/${basename}`]));
+
+    expect(() =>
+      store.findReferrers(`Knowledge/Security/files/${basename}`, basename, `Knowledge/Security/files/${basename}`),
+    ).not.toThrow();
+    expect(
+      store.findReferrers(`Knowledge/Security/files/${basename}`, basename, `Knowledge/Security/files/${basename}`),
+    ).toEqual(["note.md"]);
+  });
+
+  it("search still throws the runtime pattern-limit error for an over-long query (guarded at the boundary)", () => {
+    const { store } = newStore();
+    store.upsert(makeRow("a.md", "anything", []));
+    const longQuery = "a".repeat(MAX_LIKE_PATTERN_BYTES); // pattern = %…% = limit + 2 bytes
+    expect(() => store.search(longQuery, 50)).toThrow(/pattern too complex/);
+    // A query that fits is unaffected.
+    expect(() => store.search("a", 50)).not.toThrow();
+  });
+});
+
+describe("linkTail", () => {
+  it("returns the last path segment, or the whole target when slash-free", () => {
+    expect(linkTail("Folder/sub/name.pdf")).toBe("name.pdf");
+    expect(linkTail("name.pdf")).toBe("name.pdf");
+    expect(linkTail("a/b")).toBe("b");
+    expect(linkTail("")).toBe("");
+    expect(linkTail("trailing/")).toBe(""); // matches SQL substr-after-last-slash
+  });
+});
+
+describe("searchPatternBytes / MAX_LIKE_PATTERN_BYTES", () => {
+  it("counts the %…% wrapper and lowercases like search() does", () => {
+    // "AB" -> "%ab%" = 4 bytes.
+    expect(searchPatternBytes("AB")).toBe(4);
+  });
+
+  it("counts the extra bytes added by LIKE meta-escaping", () => {
+    // "%" escapes to "\%", so "a%" -> "%a\%%" = 5 bytes, not 4.
+    expect(searchPatternBytes("a%")).toBe(5);
+  });
+
+  it("counts UTF-8 bytes, not characters, so multibyte queries are gated correctly", () => {
+    // "é" is 2 UTF-8 bytes; "%é%" = 4 bytes.
+    expect(searchPatternBytes("é")).toBe(4);
+  });
+
+  it("the boundary condition matches the limit: a 48-char ASCII query fits, 49 does not", () => {
+    expect(searchPatternBytes("a".repeat(48))).toBe(MAX_LIKE_PATTERN_BYTES);
+    expect(searchPatternBytes("a".repeat(48)) <= MAX_LIKE_PATTERN_BYTES).toBe(true);
+    expect(searchPatternBytes("a".repeat(49)) > MAX_LIKE_PATTERN_BYTES).toBe(true);
+  });
+});
+
+describe("SqlStore schema migration (target_tail)", () => {
+  it("adds and backfills target_tail on a pre-existing (legacy) DO, idempotently", () => {
+    const db = new FakeSqlite({ legacy: true });
+    const store = new SqlStore(db.tag);
+    // Seed a wikilink row as if it predated the column (target_tail empty).
+    db.wikilinks.set("note.md\tFolder/old", { source: "note.md", target: "Folder/old", target_tail: "" });
+
+    store.init(); // runs migrate(): ALTER + backfill
+    expect(db.alterCount).toBe(1);
+    expect(db.wikilinks.get("note.md\tFolder/old")?.target_tail).toBe("old");
+    // The backfilled tail makes the partial-path lookup resolve.
+    expect(store.findReferrers("Folder/old.md", "old", "Folder/old")).toEqual(["note.md"]);
+
+    store.init(); // second wake: column already present → no further ALTER
+    expect(db.alterCount).toBe(1);
+  });
+
+  it("does not ALTER when the column already exists (fresh DO)", () => {
+    const db = new FakeSqlite(); // non-legacy: PRAGMA reports target_tail
+    const store = new SqlStore(db.tag);
+    store.init();
+    expect(db.alterCount).toBe(0);
   });
 });

@@ -28,10 +28,11 @@ export interface Store {
   /**
    * Find every note that has a wikilink whose stored target could resolve
    * to `fromPath`. Matches direct target equality against the bare basename,
-   * the full path without extension, or the full path with `.md`, plus a
-   * LIKE-suffix match for any partial-path reference ending in `/{basename}`.
-   * The caller is responsible for the precise per-file resolution check
-   * (regex rewriter) since the index does not distinguish ambiguous targets.
+   * the full path without extension, or the full path with `.md`, plus an
+   * indexed `target_tail` equality for any partial-path reference whose last
+   * segment is `{basename}` (e.g. `![[folder/name]]`). The caller is
+   * responsible for the precise per-file resolution check (regex rewriter)
+   * since the index does not distinguish ambiguous targets.
    */
   findReferrers(fromPath: string, fromBasename: string, fromPathNoExt: string): string[];
 }
@@ -48,6 +49,39 @@ type SqlTag = <T = Record<string, unknown>>(
  */
 export function escapeLikePattern(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/[%_]/g, "\\$&");
+}
+
+/**
+ * Cloudflare's Durable-Object SQLite (and D1) caps a LIKE/GLOB *pattern* at
+ * 50 bytes — far below stock SQLite's 50000 default — and rejects anything
+ * longer with the misleadingly-named `LIKE or GLOB pattern too complex:
+ * SQLITE_ERROR` (it is a length check, not a wildcard-complexity check, and it
+ * cannot be raised at runtime). See
+ * https://developers.cloudflare.com/durable-objects/platform/limits/.
+ *
+ * This is why `findReferrers` matches the partial-path case via the indexed
+ * `target_tail` column (equality, no pattern) rather than a `LIKE '%/'||name`,
+ * and why `search` must reject over-long queries at the tool boundary — see
+ * `searchPatternBytes` and ROADMAP.md.
+ */
+export const MAX_LIKE_PATTERN_BYTES = 50;
+
+/** The last `/`-delimited segment of a wikilink target, or the whole target if
+ * it has no slash. Stored as `vault_wikilinks.target_tail` so a move can find
+ * partial-path referrers (`![[folder/name]]`) by indexed equality instead of a
+ * length-limited `LIKE` suffix match. */
+export function linkTail(target: string): string {
+  const i = target.lastIndexOf("/");
+  return i === -1 ? target : target.slice(i + 1);
+}
+
+/** Byte length of the `%query%` LIKE pattern `search` would build for `query`
+ * (lowercased and meta-escaped exactly as `search` does). Compared against
+ * {@link MAX_LIKE_PATTERN_BYTES} at the tool boundary so an over-long query
+ * returns a typed error instead of a raw `SQLITE_ERROR`. */
+export function searchPatternBytes(query: string): number {
+  const pattern = "%" + escapeLikePattern(query.toLowerCase()) + "%";
+  return new TextEncoder().encode(pattern).length;
 }
 
 export class SqlStore implements Store {
@@ -69,9 +103,35 @@ export class SqlStore implements Store {
     this.sql`CREATE TABLE IF NOT EXISTS vault_wikilinks (
       source TEXT NOT NULL,
       target TEXT NOT NULL,
+      target_tail TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (source, target)
     )`;
     this.sql`CREATE INDEX IF NOT EXISTS idx_vault_wikilinks_target ON vault_wikilinks(target)`;
+    this.migrate();
+  }
+
+  /**
+   * In-place, idempotent schema upgrades for DOs created before a column
+   * existed. `init` runs on every DO wake, so each step must be a no-op once
+   * applied. The index is fully recoverable from R2 via `ensureFresh`, but we
+   * backfill in place rather than forcing a rebuild because `ensureFresh` only
+   * re-indexes notes whose etag changed — unchanged notes would otherwise keep
+   * an empty `target_tail`.
+   */
+  private migrate(): void {
+    const cols = this.sql<{ name: string }>`PRAGMA table_info(vault_wikilinks)`;
+    if (!cols.some((c) => c.name === "target_tail")) {
+      // Older DOs have vault_wikilinks without target_tail. Add it, then
+      // backfill from the existing target values (SQLite lacks a reverse()/
+      // last-index-of, so compute the tail in JS).
+      this.sql`ALTER TABLE vault_wikilinks ADD COLUMN target_tail TEXT NOT NULL DEFAULT ''`;
+      const rows = this.sql<{ source: string; target: string }>`SELECT source, target FROM vault_wikilinks`;
+      for (const r of rows) {
+        this.sql`UPDATE vault_wikilinks SET target_tail = ${linkTail(r.target)}
+          WHERE source = ${r.source} AND target = ${r.target}`;
+      }
+    }
+    this.sql`CREATE INDEX IF NOT EXISTS idx_vault_wikilinks_tail ON vault_wikilinks(target_tail)`;
   }
 
   getEtags(): Map<string, string> {
@@ -88,7 +148,8 @@ export class SqlStore implements Store {
     }
     this.sql`DELETE FROM vault_wikilinks WHERE source = ${row.path}`;
     for (const w of row.wikilinks) {
-      this.sql`INSERT OR IGNORE INTO vault_wikilinks (source, target) VALUES (${row.path}, ${w})`;
+      this.sql`INSERT OR IGNORE INTO vault_wikilinks (source, target, target_tail)
+        VALUES (${row.path}, ${w}, ${linkTail(w)})`;
     }
   }
 
@@ -116,12 +177,16 @@ export class SqlStore implements Store {
   }
 
   findReferrers(fromPath: string, fromBasename: string, fromPathNoExt: string): string[] {
-    const suffix = "%/" + escapeLikePattern(fromBasename);
+    // The partial-path case (`![[folder/name]]`) is matched by indexed equality
+    // on target_tail rather than `target LIKE '%/'||name` — `LIKE` patterns are
+    // capped at MAX_LIKE_PATTERN_BYTES on DO-SQLite, which a long basename
+    // exceeds. `target_tail = name` is exactly equivalent to the old suffix
+    // match (a target ends in `/name` iff its last segment is `name`).
     return this.sql<{ source: string }>`SELECT DISTINCT source FROM vault_wikilinks
       WHERE target = ${fromBasename}
          OR target = ${fromPathNoExt}
          OR target = ${fromPath}
-         OR target LIKE ${suffix} ESCAPE '\\'
+         OR target_tail = ${fromBasename}
       ORDER BY source`.map((r) => r.source);
   }
 }

@@ -5,7 +5,7 @@ import type { Props, ToolResult, VaultConfig } from "../types";
 import { buildVaultConfig } from "../config";
 import { VERSION } from "../version";
 import { R2Client } from "../vault/r2-client";
-import { SqlStore, VaultIndex } from "../vault/index-store";
+import { SqlStore, VaultIndex, MAX_LIKE_PATTERN_BYTES, searchPatternBytes } from "../vault/index-store";
 import { listNotes, readNote, createNote, replaceNote, replaceBody, deleteNote, patchNote, moveNote } from "./tools/notes";
 import { generatePermalink, parseFrontmatter } from "./tools/metadata";
 import { getOrCreateDailyNote, appendToDailyNote } from "./tools/daily";
@@ -132,10 +132,22 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
 
     this.server.tool(
       "search_notes",
-      "Case-insensitive substring search across every note. Matches against either the note body OR the note's file path, so 'kevin' will find both `Notes about Kevin.md` (body match) and `People/Kevin Meeting.md` (filename-only match). Returns matching paths with short snippets around the first body-match position; filename-only matches return a generic body-prefix snippet — the `path` field itself is the signal for why the note matched. Backed by an incrementally-synced DO-SQLite index — typical calls run in single-digit milliseconds.",
+      "Case-insensitive substring search across every note. Matches against either the note body OR the note's file path, so 'kevin' will find both `Notes about Kevin.md` (body match) and `People/Kevin Meeting.md` (filename-only match). Returns matching paths with short snippets around the first body-match position; filename-only matches return a generic body-prefix snippet — the `path` field itself is the signal for why the note matched. Backed by an incrementally-synced DO-SQLite index — typical calls run in single-digit milliseconds. The query must be short (≈48 bytes or fewer, a DO-SQLite LIKE limit); a longer query returns reason='query_too_long' — split it into a shorter distinctive substring.",
       { query: z.string().min(1), limit: z.number().int().positive().max(200).optional() },
       async ({ query, limit }) =>
-        instrument("search_notes", async () => okJson(await this.index.search(query, limit ?? 50))),
+        instrument("search_notes", async () => {
+          // DO-SQLite caps a LIKE pattern at 50 bytes; search wraps the query as
+          // `%query%`. Reject over-long queries with a typed error here rather
+          // than letting the SQL layer throw a raw SQLITE_ERROR. See ROADMAP.md
+          // for the FTS5 / coarse-prefix alternatives that would lift this cap.
+          if (searchPatternBytes(query) > MAX_LIKE_PATTERN_BYTES) {
+            return errResponse("query_too_long", {
+              message: `Search query is too long: its match pattern exceeds Durable Object SQLite's ${MAX_LIKE_PATTERN_BYTES}-byte LIKE limit. Use a shorter substring (about ${MAX_LIKE_PATTERN_BYTES - 2} bytes or fewer).`,
+              max_pattern_bytes: MAX_LIKE_PATTERN_BYTES,
+            });
+          }
+          return okJson(await this.index.search(query, limit ?? 50));
+        }),
     );
 
     this.server.tool(

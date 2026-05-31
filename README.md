@@ -48,7 +48,7 @@ Obsidian (Mac / iOS / iPad)
 |------|-------------|
 | `list_notes` | List all `.md` files in the vault |
 | `read_note(path)` | Returns the raw markdown as the first content block. When `PERMALINK_BASE_URL` is set, a second JSON block `{permalink}` follows. Failure: `not_found` |
-| `search_notes(query, limit?)` | Case-insensitive substring search across note bodies and file paths (DO-SQLite index) |
+| `search_notes(query, limit?)` | Case-insensitive substring search across note bodies and file paths (DO-SQLite index). Query must be ≈48 bytes or fewer (a DO-SQLite `LIKE` limit); longer → `query_too_long` |
 | `create_note(path, content)` | Create a new note. If the supplied content has no `id:` in frontmatter, a 21-char nanoid is minted and injected as the first field. Returns JSON `{path, etag, permalink}`. Failure: `exists` |
 | `replace_note(path, content)` | **Full overwrite** including frontmatter. Always preserves the existing note's `id:` (or mints one if absent) — id-stripping or id-changing through `replace_note` is impossible. Returns JSON `{path, etag, permalink}`. Failures: `not_found`, `malformed_frontmatter` (only if the supplied content has an unterminated `---`). For body-only edits use `replace_body`; for surgical edits prefer `patch_note` |
 | `replace_body(path, body)` | Replace the body of a note while preserving the frontmatter byte-for-byte. Returns JSON `{path, etag, permalink}`. Failures: `not_found`, `malformed_frontmatter` |
@@ -163,6 +163,13 @@ As of v0.3, `search_notes`, `list_tags`, and `list_backlinks` are served from an
 The initial seed on a cold DO is still O(N) — one R2 GET per note in the vault. On the Cloudflare Free tier that caps at 50 subrequests/invocation; on Paid it's 1000. If your vault grows past the cap, the seed has to be split across multiple invocations. The current code does the full seed in one shot; if you ever hit the limit, the seed should be made incremental via DO alarms.
 
 `search_notes` uses SQL `LIKE` against the lowercased body **or** the lowercased path — a note named `People/Kevin Meeting.md` matches a search for `kevin` even if the body never says "Kevin". Meta-characters (`%`, `_`, `\`) in queries are escaped so substring matches behave the same as plain `String.includes` — see `escapeLikePattern` in `src/vault/index-store.ts`. Filename-only matches return a generic body-prefix snippet; the returned `path` itself is the signal for why the note was matched.
+
+#### The 50-byte LIKE limit (and why `findReferrers` avoids it)
+
+Durable Object SQLite caps a `LIKE`/`GLOB` **pattern** at 50 bytes ([docs](https://developers.cloudflare.com/durable-objects/platform/limits/)) — far below stock SQLite's 50,000 — and rejects anything longer with the misleadingly-named `LIKE or GLOB pattern too complex: SQLITE_ERROR`. It is a length check, not a wildcard-complexity check, and cannot be raised at runtime. Two consequences are baked into the index:
+
+- **`move_note`/`move_attachment` referrer lookup (`findReferrers`) matches partial-path embeds by indexed equality, not `LIKE`.** Each `vault_wikilinks` row carries a `target_tail` column (the link's last `/`-delimited segment); a move finds `![[folder/name]]`-style referrers with `target_tail = name` rather than `target LIKE '%/'||name`. This fixes a `move_attachment` failure where a long filename pushed the old `LIKE` suffix past 50 bytes *after* the R2 byte-move had already committed (a partial, non-atomic update surfaced as a generic error). `init()` adds and backfills `target_tail` in place on Durable Objects created before the column existed; the index is also recoverable from R2 via `ensureFresh()`.
+- **`search_notes` rejects an over-long query up front.** Its pattern is `%query%`, so a query whose compiled pattern exceeds 50 bytes (≈48 bytes of query) returns `reason='query_too_long'` instead of a raw `SQLITE_ERROR`. To search for a longer phrase, use a shorter distinctive substring. Lifting this cap (FTS5, or coarse-prefix-plus-in-app-filter) is captured in `ROADMAP.md`.
 
 ### Concurrent-write race on create / update / append (latent, single-user)
 
