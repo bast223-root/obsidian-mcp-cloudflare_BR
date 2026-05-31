@@ -639,6 +639,37 @@ describe("moveNote attachment co-move", () => {
     expect(await c.getBinary("Archive/files/img.png")).not.toBeNull();
   });
 
+  it("rolls back the attachment co-move (keeps old bytes, removes new copy) when a note write fails", async () => {
+    // The irreversible old-attachment delete must not run before the note
+    // commit succeeds. Force the referrer write to fail after the attachment was
+    // copied; the rollback must leave the OLD attachment bytes in place (the
+    // restored source note still points at them) and remove the NEW copy.
+    const c = new R2Client(env.VAULT, cfg);
+    const { store, index } = newIndex(c);
+    await seedNote(c, store, "Projects/Plan.md", "see ![[files/img.png]]");
+    await c.putBinary("Projects/files/img.png", PNG, "image/png");
+    await seedNote(c, store, "Ref.md", "[[Projects/Plan]]");
+
+    const realPut = c.put.bind(c);
+    c.put = async (path: string, body: string) => {
+      if (path === "Ref.md") throw new Error("simulated failure");
+      return realPut(path, body);
+    };
+
+    await expect(
+      moveNote(c, cfg, index, { from_path: "Projects/Plan.md", to_path: "Archive/Plan.md" }),
+    ).rejects.toThrow("simulated failure");
+
+    c.put = realPut;
+    // Notes restored to pre-move state.
+    expect(await c.get("Projects/Plan.md")).toBe("see ![[files/img.png]]");
+    expect(await c.get("Archive/Plan.md")).toBeNull();
+    expect(await c.get("Ref.md")).toBe("[[Projects/Plan]]");
+    // Attachment: old bytes kept (the restored note points at them), new copy gone.
+    expect(await c.getBinary("Projects/files/img.png")).not.toBeNull();
+    expect(await c.getBinary("Archive/files/img.png")).toBeNull();
+  });
+
   it("rewrites a vault-rooted embed when the attachment co-moves", async () => {
     const c = new R2Client(env.VAULT, cfg);
     const { store, index } = newIndex(c);
