@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-05-31
+
 ### Added
 
 - **Optional `if_match` precondition on all write tools — fixes silent last-write-wins clobbering between concurrent editors.** `replace_note`, `replace_body`, `patch_note`, and `patch_frontmatter` now accept an optional `if_match` (an etag). When supplied, the write is committed via an R2 conditional put (`onlyIf: { etagMatches }`) and **fails with `reason='precondition_failed'` — writing nothing — if the note changed since that etag**, instead of silently overwriting a concurrent edit. Omitting `if_match` preserves the prior unconditional last-write-wins behavior (backward compatible). To support the read→edit flow, **`read_note` and `parse_frontmatter` now return the note's current `etag`** in their JSON block; a caller passes that etag back as `if_match`. The guard is atomic (R2 evaluates the condition at write time), closing the read-modify-write TOCTOU window — this is the "TOCTOU on create/update/append" the DO error review flagged as architectural obs #2, no longer dormant once concurrent conversations (e.g. one MCP client multiplexing chats) became routine. `create_note`'s create-vs-create race is unchanged (separate, narrower `exists` case). Confirmed via live multi-session testing; the workers-pool R2 (`workerd`) honors `onlyIf` on `put`.
@@ -307,7 +309,8 @@ Initial release.
 - End-to-end deployment verified: Obsidian (Mac) ↔ Remotely Save ↔ R2 ↔ Worker ↔ Claude.ai. Note creation through Claude.ai was confirmed and the new note synced back to Obsidian on the next Remotely Save interval.
 - Documented gotchas encountered during build: `vitest-pool-workers` + space-in-path, `custom_domain` clashes with pre-existing DNS records, 30-minute negative DNS cache after record deletion.
 
-[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.12.2...v0.13.0
 [0.12.2]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.12.1...v0.12.2
