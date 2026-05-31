@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-05-30
+
 ### Added
 
 - **`ATTACHMENT_FETCH_HOST_ALLOWLIST` accepts `*` to allow any host.** The server-side URL-fetch tool (`upload_attachment_url`) stays default-closed (empty ⇒ no host fetchable), but an operator can now set the allowlist to the single value `*` to opt into fetching from arbitrary public links. It is not a glob (no `*.example.com` per-label matching) — `*` is the one literal meaning "allow all". The SSRF denylist still takes precedence (HTTPS-only; no IP-literal / loopback / `*.local` / `*.internal`; re-checked on every redirect hop), so even with `*` those hosts are rejected with `disallowed_host`.
@@ -282,7 +284,8 @@ Initial release.
 - End-to-end deployment verified: Obsidian (Mac) ↔ Remotely Save ↔ R2 ↔ Worker ↔ Claude.ai. Note creation through Claude.ai was confirmed and the new note synced back to Obsidian on the next Remotely Save interval.
 - Documented gotchas encountered during build: `vitest-pool-workers` + space-in-path, `custom_domain` clashes with pre-existing DNS records, 30-minute negative DNS cache after record deletion.
 
-[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.12.2...HEAD
+[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.12.2...v0.13.0
 [0.12.2]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.11.0...v0.12.0
