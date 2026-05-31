@@ -364,11 +364,16 @@ export function isDisallowedAttachmentHost(hostname: string): boolean {
  * loopback/link-local host (SSRF denylist), AND the host must appear in
  * `hostAllowlist`. The allowlist is **default-closed**: an empty set rejects
  * every host (`host_not_allowed`), so the URL-fetch path does nothing until an
- * operator opts specific hosts in via ATTACHMENT_FETCH_HOST_ALLOWLIST. The SSRF
- * denylist takes precedence over the allowlist, so an IP literal still reports
- * `disallowed_host` even if someone lists it. This is run on the initial URL AND
- * on every redirect target (the fetch loop uses `redirect: "manual"`), so both
- * guards cover the whole chain rather than just the first hop.
+ * operator opts specific hosts in via ATTACHMENT_FETCH_HOST_ALLOWLIST.
+ *
+ * The single-entry value `*` is an explicit operator opt-in to allow ANY host —
+ * for pulling from arbitrary public links. It is NOT a glob and does not match
+ * per-label (there is no `*.example.com`); it is the one literal that means
+ * "allow all". The SSRF denylist still takes precedence over everything, so even
+ * with `*` an IP-literal / loopback / link-local host is rejected with
+ * `disallowed_host`. This is run on the initial URL AND on every redirect target
+ * (the fetch loop uses `redirect: "manual"`), so both guards — including `*`'s
+ * SSRF backstop — cover the whole chain rather than just the first hop.
  */
 export function validateAttachmentSourceUrl(
   raw: string,
@@ -383,7 +388,8 @@ export function validateAttachmentSourceUrl(
   if (url.protocol !== "https:") return err("insecure_url", { protocol: url.protocol });
   if (isDisallowedAttachmentHost(url.hostname)) return err("disallowed_host", { host: url.hostname });
   const host = url.hostname.toLowerCase().replace(/\.$/, "");
-  if (!hostAllowlist.has(host)) {
+  // `*` = allow any (non-denylisted) host; otherwise exact-match membership.
+  if (!hostAllowlist.has("*") && !hostAllowlist.has(host)) {
     return err("host_not_allowed", { host: url.hostname, allowed: [...hostAllowlist].sort() });
   }
   return ok(url);

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ATTACHMENT_FETCH_HOST_ALLOWLIST` accepts `*` to allow any host.** The server-side URL-fetch tool (`upload_attachment_url`) stays default-closed (empty ⇒ no host fetchable), but an operator can now set the allowlist to the single value `*` to opt into fetching from arbitrary public links. It is not a glob (no `*.example.com` per-label matching) — `*` is the one literal meaning "allow all". The SSRF denylist still takes precedence (HTTPS-only; no IP-literal / loopback / `*.local` / `*.internal`; re-checked on every redirect hop), so even with `*` those hosts are rejected with `disallowed_host`.
+
 ### Fixed
 
 - **`move_attachment` no longer fails (and partially-commits) when renaming a file with a long name.** The embed-rewrite lookup (`findReferrers`) built a `target LIKE '%/'||basename` pattern to catch partial-path embeds (`![[folder/name.ext]]`). Durable Object SQLite caps a `LIKE`/`GLOB` pattern at **50 bytes** ([docs](https://developers.cloudflare.com/durable-objects/platform/limits/)) — far below stock SQLite's 50,000 — so a basename of ~49+ bytes pushed the pattern over the limit and SQLite threw `LIKE or GLOB pattern too complex: SQLITE_ERROR`. Because the R2 byte-move had already committed by then, the call surfaced a generic error for an operation that had partially succeeded. The lookup now uses an indexed `target_tail` column (the link's last `/`-delimited segment) matched by equality — exactly equivalent to the old suffix match, with no pattern and therefore no length ceiling. `init()` adds and backfills `target_tail` in place on existing Durable Objects; the index is also recoverable from R2 via `ensureFresh()`.

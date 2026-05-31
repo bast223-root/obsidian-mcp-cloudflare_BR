@@ -340,4 +340,19 @@ describe("validateAttachmentSourceUrl", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("invalid_url");
   });
+  it("'*' allows any (non-denylisted) host", () => {
+    expect(validateAttachmentSourceUrl("https://anything.example.com/a.png", allow("*")).ok).toBe(true);
+    expect(validateAttachmentSourceUrl("https://some-other-host.test/x.pdf", allow("*")).ok).toBe(true);
+  });
+  it("'*' still rejects non-https (allow-all is not a protocol bypass)", () => {
+    const r = validateAttachmentSourceUrl("http://anything.example.com/a.png", allow("*"));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("insecure_url");
+  });
+  it("'*' still rejects IP-literal / loopback hosts (SSRF denylist wins over allow-all)", () => {
+    expect(validateAttachmentSourceUrl("https://10.0.0.1/a.png", allow("*")).ok).toBe(false);
+    const r = validateAttachmentSourceUrl("https://localhost/a.png", allow("*"));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("disallowed_host");
+  });
 });
