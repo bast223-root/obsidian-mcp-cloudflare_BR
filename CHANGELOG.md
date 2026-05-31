@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Read-only connection diagnostic for the `read_note` cross-request payload-bleed.** `ObsidianMCP.onConnect` now logs each MCP POST's `{sessionId, connectionId, requestIds}` and emits a `mcp_request_id_collision` WARN when an incoming JSON-RPC request id is already in flight on another connection of the same session. That collision is the precise trigger for the bleed, whose root cause is in the `agents` SDK streamable-HTTP transport (`StreamableHTTPServerTransport.send()` routes responses to connections by first-match on request id — verified unchanged through `agents@0.13.3`, so not fixable by an upgrade and not a defect in this repo's `read_note`, which is a clean R2 pass-through). The diagnostic is wrapped so a failure can never break a connection and always delegates to the SDK handler; it confirms the trigger on the next real occurrence rather than inferring it. See `AIHandoff/bug-read-note-cross-request-payload-bleed` in the vault for the full analysis.
+
 ## [0.14.0] - 2026-05-31
 
 ### Fixed

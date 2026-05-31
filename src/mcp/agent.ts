@@ -21,6 +21,23 @@ import {
 } from "./tools/attachments";
 import { createUploadLink } from "../upload/tokens";
 import { type McpContent, type McpResponse, errResponse, instrument } from "./instrument";
+import type { Connection, ConnectionContext } from "agents";
+import { log } from "../log";
+import {
+  type ConnLike,
+  type JsonRpcId,
+  decodeRequestIdsFromHeader,
+  findCollidingRequestIds,
+} from "./diagnostics";
+
+// SDK-internal headers: the agents streamable-HTTP transport bridges each MCP
+// POST to this Durable Object as a WebSocket upgrade carrying the HTTP method
+// and the base64 JSON-RPC payload in these headers. Read here only for the
+// read-only connection diagnostic in onConnect; if the SDK renames them the
+// diagnostic silently no-ops (decodeRequestIdsFromHeader → []) and never affects
+// request handling.
+const MCP_HTTP_METHOD_HEADER = "cf-mcp-method";
+const MCP_MESSAGE_HEADER = "cf-mcp-message";
 
 const NotePath = z.string().min(1).regex(/\.md$/i, "path must end with .md");
 
@@ -122,6 +139,50 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
       this._index.init();
     }
     return this._index;
+  }
+
+  // Read-only diagnostic for the read_note cross-request payload-bleed bug
+  // (AIHandoff/bug-read-note-cross-request-payload-bleed). The agents SDK
+  // streamable-HTTP transport routes each JSON-RPC response to a connection by
+  // first-match on request id, which is only safe while ids are unique within
+  // the session; two concurrent same-session requests sharing an id can cross
+  // streams (one read_note returning another's body). This logs every POST's
+  // {sessionId, connectionId, requestIds} and WARNs when an incoming id is
+  // already in flight on another connection of this session — the exact trigger,
+  // so the next real occurrence is captured rather than inferred. Wrapped so a
+  // diagnostic failure can never break the connection; always delegates to the
+  // SDK handler, which is what actually processes the request.
+  async onConnect(conn: Connection, ctx: ConnectionContext): Promise<void> {
+    try {
+      if (ctx.request.headers.get(MCP_HTTP_METHOD_HEADER) === "POST") {
+        const requestIds = decodeRequestIdsFromHeader(
+          ctx.request.headers.get(MCP_MESSAGE_HEADER),
+        );
+        if (requestIds.length > 0) {
+          const sessionId = this.getSessionId();
+          const open: ConnLike[] = Array.from(
+            this.getConnections<{ requestIds?: JsonRpcId[] }>(),
+            (c) => ({ id: c.id, state: (c.state as { requestIds?: JsonRpcId[] } | null) ?? null }),
+          );
+          const colliding = findCollidingRequestIds(requestIds, conn.id, open);
+          if (colliding.length > 0) {
+            log.warn("mcp_request_id_collision", {
+              sessionId,
+              connectionId: conn.id,
+              requestIds,
+              colliding,
+            });
+          } else {
+            log.debug("mcp_post_connect", { sessionId, connectionId: conn.id, requestIds });
+          }
+        }
+      }
+    } catch (e) {
+      log.warn("mcp_connect_diagnostic_failed", {
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+    return super.onConnect(conn, ctx);
   }
 
   async init() {
