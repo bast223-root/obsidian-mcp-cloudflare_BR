@@ -146,12 +146,13 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
   // streamable-HTTP transport routes each JSON-RPC response to a connection by
   // first-match on request id, which is only safe while ids are unique within
   // the session; two concurrent same-session requests sharing an id can cross
-  // streams (one read_note returning another's body). This logs every POST's
-  // {sessionId, connectionId, requestIds} and WARNs when an incoming id is
-  // already in flight on another connection of this session — the exact trigger,
-  // so the next real occurrence is captured rather than inferred. Wrapped so a
-  // diagnostic failure can never break the connection; always delegates to the
-  // SDK handler, which is what actually processes the request.
+  // streams (one read_note returning another's body). It WARNs
+  // (`mcp_request_id_collision`) whenever an incoming id is already in flight on
+  // another connection of this session — the exact trigger — always on, since
+  // that case is rare and high-signal (a standing canary). The per-POST
+  // `mcp_post_connect` debug trace is gated behind CONNECTION_DIAGNOSTICS (default
+  // off) to avoid log noise. Wrapped so a diagnostic failure can never break the
+  // connection; always delegates to the SDK handler, which processes the request.
   async onConnect(conn: Connection, ctx: ConnectionContext): Promise<void> {
     try {
       if (ctx.request.headers.get(MCP_HTTP_METHOD_HEADER) === "POST") {
@@ -166,13 +167,19 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
           );
           const colliding = findCollidingRequestIds(requestIds, conn.id, open);
           if (colliding.length > 0) {
+            // Always on: the collision WARN is rare (needs a misbehaving client)
+            // and high-signal — a standing canary for the cross-conversation
+            // response-bleed trigger recurring. Cheap: only emits on collision.
             log.warn("mcp_request_id_collision", {
               sessionId,
               connectionId: conn.id,
               requestIds,
               colliding,
             });
-          } else {
+          } else if (this.env.CONNECTION_DIAGNOSTICS === "true") {
+            // Per-POST trace — one debug line per tool call, so default-OFF to
+            // avoid log noise (it roughly doubles instrument()'s per-call debug).
+            // Flip CONNECTION_DIAGNOSTICS=true to study session/request-id behavior.
             log.debug("mcp_post_connect", { sessionId, connectionId: conn.id, requestIds });
           }
         }

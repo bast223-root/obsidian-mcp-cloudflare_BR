@@ -61,7 +61,14 @@
     // 'host_not_allowed'. This is deployment-specific, so it is filled from .env
     // (ATTACHMENT_FETCH_HOST_ALLOWLIST) rather than hardcoded here. Set it to the
     // host(s) you transfer attachments from, e.g. another MCP server you operate.
-    "ATTACHMENT_FETCH_HOST_ALLOWLIST": "${ATTACHMENT_FETCH_HOST_ALLOWLIST}"
+    "ATTACHMENT_FETCH_HOST_ALLOWLIST": "${ATTACHMENT_FETCH_HOST_ALLOWLIST}",
+    // Diagnostics toggle (default "false"). When "true", ObsidianMCP.onConnect
+    // also emits a per-POST `mcp_post_connect` debug log (sessionId/connectionId/
+    // requestIds) for studying MCP client session + JSON-RPC request-id behavior.
+    // The rare `mcp_request_id_collision` WARN canary fires regardless. Leave
+    // "false" in production — it is one debug line per tool call. Set "true" (and
+    // redeploy) to re-enable the full trace; .dev.vars can set it for local dev.
+    "CONNECTION_DIAGNOSTICS": "false"
   },
   "observability": { "enabled": true }
 }

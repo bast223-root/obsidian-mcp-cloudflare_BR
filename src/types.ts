@@ -11,6 +11,12 @@ interface ManualBindings {
    * `wrangler secret put UPLOAD_TOKEN`. Empty/unset disables the endpoint. */
   UPLOAD_TOKEN: string;
   OAUTH_PROVIDER: OAuthHelpers;
+  /** Plain var (optional). When the string `"true"`, `ObsidianMCP.onConnect`
+   * also emits the per-POST `mcp_post_connect` debug log (sessionId/connectionId/
+   * requestIds) for studying MCP client session/request-id behavior. Default
+   * off/unset — the rare `mcp_request_id_collision` WARN canary fires regardless.
+   * See the read_note cross-request payload-bleed investigation. */
+  CONNECTION_DIAGNOSTICS?: string;
 }
 
 declare global {
