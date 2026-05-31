@@ -1,4 +1,5 @@
 import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
+import type { Period } from "./vault/periodic";
 
 // Secrets / provider bindings not present in wrangler.jsonc `vars`, so they are
 // not in the generated `worker-configuration.d.ts`. Augment both the global Env
@@ -28,9 +29,13 @@ export interface Props extends Record<string, unknown> {
 export type AttachmentsPathMode = "per_note_subfolder" | "vault_default" | "caller_specified";
 export type AttachmentsMoveWithNote = "unique_refs" | "never";
 
+/** Per-cadence periodic-note path templates. A `null` value means that cadence
+ * has no configured template; its tools return `period_not_configured`. */
+export type PeriodicNoteTemplates = Record<Period, string | null>;
+
 export interface VaultConfig {
   prefix: string;
-  dailyNotePathTemplate: string;
+  periodicNoteTemplates: PeriodicNoteTemplates;
   permalinkBaseUrl: string;
   // Attachment handling (see wrangler vars ATTACHMENTS_*/ATTACHMENT_*).
   attachmentsPathMode: AttachmentsPathMode;

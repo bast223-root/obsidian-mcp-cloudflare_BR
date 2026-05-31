@@ -9,6 +9,7 @@ import {
   extractIdFromFrontmatter,
   extractWikilinks,
   generateNoteId,
+  parseNote,
   rewriteEmbedTargetForMove,
   rewriteWikilinksForMove,
   setIdInFrontmatter,
@@ -32,19 +33,43 @@ export async function readNote(
   c: R2Client,
   cfg: VaultConfig,
   args: { path: string },
-): Promise<ToolResult<{ path: string; content: string; permalink: string | null }>> {
+): Promise<
+  ToolResult<{
+    path: string;
+    content: string;
+    permalink: string | null;
+    frontmatter: Record<string, unknown>;
+  }>
+> {
   const body = await c.get(args.path);
   if (body === null) return err("not_found", { path: args.path });
   const id = extractIdFromFrontmatter(body);
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, id);
-  return ok({ path: args.path, content: body, permalink });
+  // parseNote → gray-matter → js-yaml throws on malformed YAML. read_note must
+  // stay throw-free (it returns raw bytes); a note a user hand-broke in Obsidian
+  // should still be readable, just with empty parsed frontmatter.
+  let frontmatter: Record<string, unknown> = {};
+  try {
+    frontmatter = parseNote(body).frontmatter;
+  } catch {
+    frontmatter = {};
+  }
+  return ok({ path: args.path, content: body, permalink, frontmatter });
 }
 
 export async function createNote(
   c: R2Client,
   cfg: VaultConfig,
   args: { path: string; content: string },
-): Promise<ToolResult<{ path: string; etag: string; content: string; permalink: string | null }>> {
+): Promise<
+  ToolResult<{
+    path: string;
+    etag: string;
+    content: string;
+    permalink: string | null;
+    id: string | null;
+  }>
+> {
   if (await c.head(args.path)) return err("exists", { path: args.path });
   let prepared;
   try {
@@ -57,14 +82,22 @@ export async function createNote(
   }
   const etag = await c.put(args.path, prepared.content);
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, prepared.id);
-  return ok({ path: args.path, etag, content: prepared.content, permalink });
+  return ok({ path: args.path, etag, content: prepared.content, permalink, id: prepared.id });
 }
 
 export async function replaceNote(
   c: R2Client,
   cfg: VaultConfig,
   args: { path: string; content: string },
-): Promise<ToolResult<{ path: string; etag: string; content: string; permalink: string | null }>> {
+): Promise<
+  ToolResult<{
+    path: string;
+    etag: string;
+    content: string;
+    permalink: string | null;
+    id: string | null;
+  }>
+> {
   const existing = await c.get(args.path);
   if (existing === null) return err("not_found", { path: args.path });
   // Preserve the existing id if there is one; otherwise mint or accept the
@@ -90,14 +123,22 @@ export async function replaceNote(
   }
   const etag = await c.put(args.path, content);
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, finalId);
-  return ok({ path: args.path, etag, content, permalink });
+  return ok({ path: args.path, etag, content, permalink, id: finalId });
 }
 
 export async function replaceBody(
   c: R2Client,
   cfg: VaultConfig,
   args: { path: string; body: string },
-): Promise<ToolResult<{ path: string; etag: string; content: string; permalink: string | null }>> {
+): Promise<
+  ToolResult<{
+    path: string;
+    etag: string;
+    content: string;
+    permalink: string | null;
+    id: string | null;
+  }>
+> {
   const existing = await c.get(args.path);
   if (existing === null) return err("not_found", { path: args.path });
   let split;
@@ -113,7 +154,7 @@ export async function replaceBody(
   const etag = await c.put(args.path, content);
   const id = extractIdFromFrontmatter(content);
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, id);
-  return ok({ path: args.path, etag, content, permalink });
+  return ok({ path: args.path, etag, content, permalink, id });
 }
 
 export async function deleteNote(
@@ -160,11 +201,11 @@ export async function moveNote(
     }
   }
 
-  // Co-move attachments uniquely embedded by this note (opt-in). Bytes are moved
-  // BEFORE the note commit; an embed is only rewritten for an attachment whose
-  // byte-move succeeded, so a skipped move leaves the embed pointing at the
-  // still-present original (no broken link). The note commit below is the last,
-  // best-effort-atomic step.
+  // Co-move attachments uniquely embedded by this note (opt-in). This COPIES the
+  // bytes to their new path but does not delete the originals — the old bytes
+  // stay put as a rollback anchor and are deleted only after the note commit
+  // succeeds (see below). A skipped copy leaves the embed pointing at the
+  // still-present original (no broken link).
   const attachments_moved = await comoveAttachments(c, cfg, index, from, to, sourceBody);
 
   // Rewrite self-references inside the moved file (.md wikilinks) and any
@@ -176,50 +217,77 @@ export async function moveNote(
     movedContent = rewriteEmbedTargetForMove(movedContent, a.oldTarget, newTarget).content;
   }
 
-  // Commit with best-effort rollback. R2 has no transactional API, so a crash
-  // after some writes have landed will leave partial state — we track every
-  // successful write and revert in reverse order on failure.
+  // Commit with best-effort rollback. R2 has no transactional API, so we track
+  // every successful note write and revert in reverse order on failure. The
+  // attachment copies already exist at their new paths but the originals are
+  // still present, so a failed commit rolls back to a fully consistent pre-move
+  // state (notes restored, new copies deleted, originals untouched).
   const written: { path: string; previousContent: string | null }[] = [];
+  const notes_modified: { path: string; etag: string; content: string }[] = [];
   try {
     await c.put(to, movedContent);
     written.push({ path: to, previousContent: null });
-    const notes_modified: { path: string; etag: string; content: string }[] = [];
     for (const p of planned) {
       const etag = await c.put(p.path, p.newContent);
       written.push({ path: p.path, previousContent: p.oldContent });
       notes_modified.push({ path: p.path, etag, content: p.newContent });
     }
-    await c.delete(from);
-    // Re-stat `to` to get the etag for the moved file (we discarded the first put's etag).
-    // Cheap: the put just happened so the head is in R2's strongly-consistent path.
-    const head = await c.head(to);
-    const movedEtag = head?.etag ?? "";
-    const links_updated =
-      (movedRewrite.changed ? movedRewrite.count : 0) +
-      planned.reduce((acc, p) => acc + p.count, 0);
-    return ok({
-      from,
-      to,
-      links_updated,
-      notes_modified,
-      moved: { path: to, etag: movedEtag, content: movedContent },
-      attachments_moved: attachments_moved.map((a) => ({ from: a.from, to: a.to })),
-    });
   } catch (e) {
+    // Revert note writes in reverse, then delete the new attachment copies. The
+    // originals were never deleted, so the restored source note's embeds still
+    // resolve. Nothing is committed.
     for (let i = written.length - 1; i >= 0; i--) {
       const w = written[i];
       try {
-        if (w.previousContent === null) {
-          await c.delete(w.path);
-        } else {
-          await c.put(w.path, w.previousContent);
-        }
+        if (w.previousContent === null) await c.delete(w.path);
+        else await c.put(w.path, w.previousContent);
       } catch {
         // Rollback is best-effort; nothing further we can do here.
       }
     }
+    for (const a of attachments_moved) {
+      try {
+        await c.delete(a.to);
+      } catch {
+        // best-effort
+      }
+    }
     throw e;
   }
+
+  // Commit point passed: all note writes and attachment copies are in place. The
+  // only remaining steps are irreversible deletes of now-redundant originals —
+  // run LAST and best-effort, so a failure here leaves a benign lingering object
+  // rather than a stranded half-move. Delete the source NOTE before the old
+  // attachment bytes: if a delete fails, an unreferenced orphan attachment is a
+  // more benign leftover than a still-present source note whose embeds point at
+  // attachments already deleted.
+  await c.delete(from);
+  for (const a of attachments_moved) {
+    try {
+      await c.delete(a.from);
+    } catch (e) {
+      log.warn("attachment_comove_delete_failed", {
+        from: a.from,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+  // Re-stat `to` to get the etag for the moved file (we discarded the first put's etag).
+  // Cheap: the put just happened so the head is in R2's strongly-consistent path.
+  const head = await c.head(to);
+  const movedEtag = head?.etag ?? "";
+  const links_updated =
+    (movedRewrite.changed ? movedRewrite.count : 0) +
+    planned.reduce((acc, p) => acc + p.count, 0);
+  return ok({
+    from,
+    to,
+    links_updated,
+    notes_modified,
+    moved: { path: to, etag: movedEtag, content: movedContent },
+    attachments_moved: attachments_moved.map((a) => ({ from: a.from, to: a.to })),
+  });
 }
 
 interface ComovedAttachment {
@@ -284,8 +352,11 @@ async function comoveAttachments(
     try {
       const obj = await c.getBinary(realOld);
       if (!obj) continue;
+      // Copy only — the old bytes are NOT deleted here. They stay as the
+      // rollback anchor until moveNote's note commit succeeds, which then
+      // deletes them as the last (irreversible) step. Deleting here, before the
+      // fallible note commit, was the non-atomic-ordering hazard.
       await c.putBinary(newPath, obj.body, obj.contentType, { onlyIfNotExists: true });
-      await c.delete(realOld);
       moved.push({ from: realOld, to: newPath, oldTarget: target });
     } catch (e) {
       log.warn("attachment_comove_skipped", {
@@ -309,6 +380,7 @@ export async function patchNote(
     etag: string;
     content: string;
     permalink: string | null;
+    id: string | null;
   }>
 > {
   if (args.old_str === args.new_str) return err("no_op", { path: args.path });
@@ -341,5 +413,5 @@ export async function patchNote(
   const etag = await c.put(args.path, next);
   const id = extractIdFromFrontmatter(next);
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, id);
-  return ok({ path: args.path, count, etag, content: next, permalink });
+  return ok({ path: args.path, count, etag, content: next, permalink, id });
 }

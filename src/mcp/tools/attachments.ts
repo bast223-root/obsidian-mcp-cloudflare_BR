@@ -280,6 +280,38 @@ export interface MoveAttachmentResult {
  * move bytes only. Fails with reason='same_path', 'not_found', 'exists', or
  * 'disallowed_extension'.
  */
+/**
+ * Best-effort rollback of a partially-applied attachment move. Restores each
+ * note rewritten so far to its original bytes, then undoes the destination copy
+ * (restoring prior bytes when overwriting, else deleting the copy). Each step is
+ * independently best-effort — R2 has no cross-object transaction, so a failure
+ * mid-rollback can't itself be unwound; the goal is to converge on the pre-move
+ * state, not to guarantee it under cascading R2 outages.
+ */
+async function rollbackAttachmentMove(
+  c: R2Client,
+  rewritten: { path: string; original: string }[],
+  toPath: string,
+  priorTo: { body: ArrayBuffer; contentType: string } | null,
+): Promise<void> {
+  for (const r of rewritten) {
+    try {
+      await c.put(r.path, r.original);
+    } catch {
+      // best-effort — leave it for a future reconcile rather than throwing
+    }
+  }
+  try {
+    if (priorTo) {
+      await c.putBinary(toPath, priorTo.body, priorTo.contentType, { onlyIfNotExists: false });
+    } else {
+      await c.delete(toPath);
+    }
+  } catch {
+    // best-effort
+  }
+}
+
 export async function moveAttachment(
   c: R2Client,
   cfg: VaultConfig,
@@ -296,6 +328,17 @@ export async function moveAttachment(
   const obj = await c.getBinary(args.from_path);
   if (!obj) return err("not_found", { path: args.from_path });
 
+  // When overwriting, snapshot the prior destination bytes so a rollback can
+  // restore them. A non-overwrite put is non-clobbering, so its rollback is a
+  // plain delete of the copy we wrote.
+  let priorTo: { body: ArrayBuffer; contentType: string } | null = null;
+  if (args.overwrite) {
+    const existing = await c.getBinary(args.to_path);
+    if (existing) priorTo = { body: existing.body, contentType: existing.contentType };
+  }
+
+  // Step 1 — copy bytes to the new path. Reversible: the old object at
+  // `from_path` is the rollback anchor and is NOT touched until the very end.
   let etag: string;
   let size: number;
   try {
@@ -304,52 +347,74 @@ export async function moveAttachment(
     });
     etag = put.etag;
     size = put.size;
-    await c.delete(args.from_path);
   } catch (e) {
     if (e instanceof ObjectExistsError) return err("exists", { path: args.to_path });
     throw e;
   }
 
-  // Rewrite embeds in any note that referenced the old path so the link follows
-  // the file. Bytes are already moved; an unrewritten note simply keeps pointing
-  // at the now-missing path (best-effort, same as move_note).
+  // Step 2 — rewrite embeds in every referring note so the link follows the
+  // file. The byte-move is not yet committed (`from_path` still present), so any
+  // failure here rolls back to a clean pre-move state: the irreversible delete
+  // of `from_path` is deferred to step 3, after this whole loop succeeds. This
+  // is the fix for the non-atomic-ordering defect — previously the delete ran
+  // first, so a rewrite failure stranded a committed move with unrewritten notes.
   const notes_modified: { path: string; etag: string; content: string }[] = [];
   const referrers_unchanged: string[] = [];
+  const rewritten: { path: string; original: string }[] = [];
   if (args.update_embeds !== false) {
     const fromSlash = args.from_path.lastIndexOf("/");
     const fromBasename =
       fromSlash === -1 ? args.from_path : args.from_path.slice(fromSlash + 1);
-    const referrers = await index.findReferrersFor(args.from_path);
-    for (const notePath of referrers) {
-      const body = await c.get(notePath);
-      if (body === null) continue;
-      const newRel = relativeForEmbed(args.to_path, notePath);
-      // Rewrite both the note-relative and vault-rooted forms of the old target.
-      let updated = body;
-      for (const oldForm of new Set([relativeForEmbed(args.from_path, notePath), args.from_path])) {
-        // Prefer the note-relative (shortened) form for the new target. But when
-        // the file moves *into* a subtree of this note's own folder, the
-        // shortened form collapses back onto the old embed text — rewriting to
-        // it would be a silent no-op that leaves the link pointing at the now-
-        // empty source. Fall back to the full vault path so the link still
-        // follows the file (the asymmetry behind the move-there/move-back bug).
-        const newForm = oldForm === newRel ? args.to_path : newRel;
-        if (oldForm === newForm) continue;
-        updated = rewriteEmbedTargetForMove(updated, oldForm, newForm).content;
+    try {
+      const referrers = await index.findReferrersFor(args.from_path);
+      for (const notePath of referrers) {
+        const body = await c.get(notePath);
+        if (body === null) continue;
+        const newRel = relativeForEmbed(args.to_path, notePath);
+        // Rewrite both the note-relative and vault-rooted forms of the old target.
+        let updated = body;
+        for (const oldForm of new Set([relativeForEmbed(args.from_path, notePath), args.from_path])) {
+          // Prefer the note-relative (shortened) form for the new target. But when
+          // the file moves *into* a subtree of this note's own folder, the
+          // shortened form collapses back onto the old embed text — rewriting to
+          // it would be a silent no-op that leaves the link pointing at the now-
+          // empty source. Fall back to the full vault path so the link still
+          // follows the file (the asymmetry behind the move-there/move-back bug).
+          const newForm = oldForm === newRel ? args.to_path : newRel;
+          if (oldForm === newForm) continue;
+          updated = rewriteEmbedTargetForMove(updated, oldForm, newForm).content;
+        }
+        if (updated !== body) {
+          const noteEtag = await c.put(notePath, updated);
+          rewritten.push({ path: notePath, original: body });
+          notes_modified.push({ path: notePath, etag: noteEtag, content: updated });
+        } else if (extractWikilinks(body).includes(fromBasename)) {
+          // Found as a referrer but unchanged: it links the file by bare filename
+          // (`![[name.ext]]`), which the rewrite set deliberately doesn't touch
+          // (Obsidian resolves it by name, so it self-heals). The bare-basename
+          // check also excludes referrer-query false positives like
+          // `![[Other/name.ext]]`, which point at a different file entirely.
+          referrers_unchanged.push(notePath);
+        }
       }
-      if (updated !== body) {
-        const noteEtag = await c.put(notePath, updated);
-        notes_modified.push({ path: notePath, etag: noteEtag, content: updated });
-      } else if (extractWikilinks(body).includes(fromBasename)) {
-        // Found as a referrer but unchanged: it links the file by bare filename
-        // (`![[name.ext]]`), which the rewrite set deliberately doesn't touch
-        // (Obsidian resolves it by name, so it self-heals). The bare-basename
-        // check also excludes referrer-query false positives like
-        // `![[Other/name.ext]]`, which point at a different file entirely.
-        referrers_unchanged.push(notePath);
-      }
+    } catch (e) {
+      // Roll back (best-effort): restore the notes already rewritten this call,
+      // then undo the byte copy. `from_path` was never touched, so the vault
+      // returns to its pre-move state and the error honestly means "nothing
+      // committed" — no double-handling hazard for a retrying caller.
+      await rollbackAttachmentMove(c, rewritten, args.to_path, priorTo);
+      return err("embed_rewrite_failed", {
+        from_path: args.from_path,
+        to_path: args.to_path,
+        message: e instanceof Error ? e.message : String(e),
+      });
     }
   }
+
+  // Step 3 — irreversible step LAST: the copy and every embed rewrite succeeded,
+  // so delete the old object. A failure here leaves the new file and rewritten
+  // notes in place (a benign lingering source), never a stranded half-move.
+  await c.delete(args.from_path);
 
   return ok({
     from: args.from_path,

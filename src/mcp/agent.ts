@@ -7,8 +7,9 @@ import { VERSION } from "../version";
 import { R2Client } from "../vault/r2-client";
 import { SqlStore, VaultIndex, MAX_LIKE_PATTERN_BYTES, searchPatternBytes } from "../vault/index-store";
 import { listNotes, readNote, createNote, replaceNote, replaceBody, deleteNote, patchNote, moveNote } from "./tools/notes";
-import { generatePermalink, parseFrontmatter } from "./tools/metadata";
-import { getOrCreateDailyNote, appendToDailyNote } from "./tools/daily";
+import { generatePermalink, parseFrontmatter, patchFrontmatter } from "./tools/metadata";
+import { getOrCreatePeriodicNote, appendToPeriodicNote } from "./tools/periodic";
+import type { Period } from "../vault/periodic";
 import { backfillIds } from "./tools/admin";
 import {
   deleteAttachment,
@@ -22,6 +23,23 @@ import { createUploadLink } from "../upload/tokens";
 import { type McpContent, type McpResponse, errResponse, instrument } from "./instrument";
 
 const NotePath = z.string().min(1).regex(/\.md$/i, "path must end with .md");
+
+// Cadence selector for the periodic-note tools. z.enum needs a literal tuple;
+// the assignment below is a compile-time guard that it stays exactly in sync
+// with the Period union in src/vault/periodic.ts.
+const PeriodEnum = z.enum(["daily", "weekly", "monthly", "quarterly", "yearly"]);
+// patch_frontmatter accepts scalar or inline-scalar-array values only; nested
+// structures are rejected at the schema layer (the line-level editor cannot
+// safely round-trip them).
+const FmScalar = z.union([z.string(), z.number(), z.boolean()]);
+const FmValue = z.union([FmScalar, z.array(FmScalar)]);
+type _PeriodEnumExact = [Period] extends [z.infer<typeof PeriodEnum>]
+  ? [z.infer<typeof PeriodEnum>] extends [Period]
+    ? true
+    : never
+  : never;
+const _periodEnumExact: _PeriodEnumExact = true;
+void _periodEnumExact;
 
 // Attachment paths accept any extension (the per-tool extension allowlist gives
 // a richer error). This schema mirrors the R2Client.toKey safety check at the
@@ -120,13 +138,18 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
 
     this.server.tool(
       "read_note",
-      "Read the full contents of a single markdown note. The note body is returned as the first text block (raw markdown). When PERMALINK_BASE_URL is configured, a second text block follows containing JSON `{permalink}` — the short HTTP URL that resolves into Obsidian via the link-resolver Worker. Clients that only inspect content[0] still get the raw body unchanged.",
+      "Read the full contents of a single markdown note. The note body is returned as the first text block (raw markdown, including the frontmatter). A second text block always follows containing JSON `{permalink?, frontmatter}` — `frontmatter` is the parsed YAML metadata object (empty `{}` if none), and `permalink` (the short HTTP URL that resolves into Obsidian via the link-resolver Worker) is present only when PERMALINK_BASE_URL is configured. Clients that only inspect content[0] still get the raw body unchanged.",
       { path: NotePath },
       async ({ path }) =>
         instrument("read_note", async () =>
-          fromToolResultBlocks(await readNote(this.vault, this.cfg, { path }), (v) =>
-            v.permalink ? [v.content, JSON.stringify({ permalink: v.permalink })] : [v.content],
-          ),
+          fromToolResultBlocks(await readNote(this.vault, this.cfg, { path }), (v) => [
+            v.content,
+            JSON.stringify(
+              v.permalink
+                ? { permalink: v.permalink, frontmatter: v.frontmatter }
+                : { frontmatter: v.frontmatter },
+            ),
+          ]),
         ),
     );
 
@@ -152,14 +175,14 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
 
     this.server.tool(
       "create_note",
-      "Create a new markdown note. Returns JSON `{path, etag, permalink}` on success (permalink is null if PERMALINK_BASE_URL is unset). Fails with reason='exists' if a note already exists at this path.",
+      "Create a new markdown note. A stable nanoid `id:` is auto-minted into the frontmatter when your content omits one — do NOT pre-generate an id yourself; a caller-supplied `id:` in the content is honored verbatim instead. Returns JSON `{path, etag, id, permalink}` on success (`id` is the minted or supplied id; permalink is null if PERMALINK_BASE_URL is unset). Fails with reason='exists' if a note already exists at this path.",
       { path: NotePath, content: z.string() },
       async (args) =>
         instrument("create_note", async () => {
           const r = await createNote(this.vault, this.cfg, args);
           if (r.ok) this.index.upsertFromContent(r.value.path, r.value.content, r.value.etag);
           return fromToolResult(r, (v) =>
-            JSON.stringify({ path: v.path, etag: v.etag, permalink: v.permalink }),
+            JSON.stringify({ path: v.path, etag: v.etag, id: v.id, permalink: v.permalink }),
           );
         }),
     );
@@ -173,7 +196,7 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
           const r = await replaceNote(this.vault, this.cfg, args);
           if (r.ok) this.index.upsertFromContent(r.value.path, r.value.content, r.value.etag);
           return fromToolResult(r, (v) =>
-            JSON.stringify({ path: v.path, etag: v.etag, permalink: v.permalink }),
+            JSON.stringify({ path: v.path, etag: v.etag, id: v.id, permalink: v.permalink }),
           );
         }),
     );
@@ -187,7 +210,7 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
           const r = await replaceBody(this.vault, this.cfg, args);
           if (r.ok) this.index.upsertFromContent(r.value.path, r.value.content, r.value.etag);
           return fromToolResult(r, (v) =>
-            JSON.stringify({ path: v.path, etag: v.etag, permalink: v.permalink }),
+            JSON.stringify({ path: v.path, etag: v.etag, id: v.id, permalink: v.permalink }),
           );
         }),
     );
@@ -210,6 +233,7 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
               path: v.path,
               etag: v.etag,
               count: v.count,
+              id: v.id,
               permalink: v.permalink,
             }),
           );
@@ -272,6 +296,31 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
     );
 
     this.server.tool(
+      "patch_frontmatter",
+      "Set and/or unset top-level YAML frontmatter fields on a note without rewriting the file. Edits happen at the line level, so untouched fields, key order, and comments are preserved exactly. `set` is an object of field→value (value may be a string, number, boolean, or an array of those — nested objects are rejected); `unset` is a list of field names to remove. The note's `id:` is immutable here: naming `id` in either `set` or `unset` fails with reason='id_immutable'. An id is ensured on write (minted if the note had none and returned in the result). Prefer this over patch_note for metadata edits — it cannot accidentally clip the id line. Returns JSON `{path, etag, id, permalink, changed_keys, removed_keys}`. Fails with reason='not_found' if the note is missing, reason='no_op' if both set and unset are empty, reason='unsupported_block_value' (with the offending `key`) if a targeted field holds a multi-line/block-style value — edit those by hand via replace_note.",
+      {
+        path: NotePath,
+        set: z.record(z.string(), FmValue).optional(),
+        unset: z.array(z.string().min(1)).optional(),
+      },
+      async (args) =>
+        instrument("patch_frontmatter", async () => {
+          const r = await patchFrontmatter(this.vault, this.cfg, args);
+          if (r.ok) this.index.upsertFromContent(r.value.path, r.value.content, r.value.etag);
+          return fromToolResult(r, (v) =>
+            JSON.stringify({
+              path: v.path,
+              etag: v.etag,
+              id: v.id,
+              permalink: v.permalink,
+              changed_keys: v.changed_keys,
+              removed_keys: v.removed_keys,
+            }),
+          );
+        }),
+    );
+
+    this.server.tool(
       "generate_permalink",
       "Build a short HTTP permalink for a note. The URL routes through the link-resolver Worker (configured via PERMALINK_BASE_URL) and 302-redirects into Obsidian. Returns JSON `{path, permalink, kind}` where kind is 'id' (rename-stable, resolved by frontmatter id) or 'path' (fallback for notes without an id — breaks on rename, run backfill_ids to upgrade). Fails with reason='not_found' if the note does not exist, reason='permalink_disabled' if PERMALINK_BASE_URL is unset.",
       { path: NotePath },
@@ -301,28 +350,43 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
     );
 
     this.server.tool(
-      "get_or_create_daily_note",
-      "Look up today's daily note (or the supplied YYYY-MM-DD date), creating it from the template if it does not yet exist.",
-      { date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() },
+      "periodic_note_get_or_create",
+      "Look up the periodic note for the given cadence covering today (or the supplied YYYY-MM-DD anchor), creating it from the cadence's heading plus a fresh nanoid id if it does not yet exist. `period` selects the cadence (daily/weekly/monthly/quarterly/yearly); the anchor date is bucketed into the week/month/quarter/year that contains it. Returns JSON `{path, created, id}` — `id` is the existing or freshly-minted note id, or null if an existing note has none. Fails with reason='period_not_configured' when no path template is set for that cadence (set the matching DAILY_/WEEKLY_/MONTHLY_/QUARTERLY_/YEARLY_NOTE_PATH_TEMPLATE).",
+      {
+        period: PeriodEnum,
+        date: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      },
       async (args) =>
-        instrument("get_or_create_daily_note", async () => {
-          const r = await getOrCreateDailyNote(this.vault, this.cfg, args);
-          if (r.created && r.etag !== null && r.content !== null) {
-            this.index.upsertFromContent(r.path, r.content, r.etag);
+        instrument("periodic_note_get_or_create", async () => {
+          const r = await getOrCreatePeriodicNote(this.vault, this.cfg, args);
+          if (r.ok && r.value.created && r.value.etag !== null && r.value.content !== null) {
+            this.index.upsertFromContent(r.value.path, r.value.content, r.value.etag);
           }
-          return okJson({ path: r.path, created: r.created });
+          return fromToolResult(r, (v) =>
+            JSON.stringify({ path: v.path, created: v.created, id: v.id }),
+          );
         }),
     );
 
     this.server.tool(
-      "append_to_daily_note",
-      "Append a block of text to today's daily note (or the supplied date), creating it if it does not exist. A newline boundary is inserted automatically if needed.",
-      { date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), content: z.string().min(1) },
+      "periodic_note_append",
+      "Append a block of text to the periodic note for the given cadence covering today (or the supplied anchor date), creating it if it does not exist. A newline boundary is inserted automatically if needed. Returns JSON `{path, id}` (`id` is null when the note has no frontmatter). Fails with reason='period_not_configured' when no path template is set for that cadence.",
+      {
+        period: PeriodEnum,
+        date: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+        content: z.string().min(1),
+      },
       async (args) =>
-        instrument("append_to_daily_note", async () => {
-          const r = await appendToDailyNote(this.vault, this.cfg, args);
-          this.index.upsertFromContent(r.path, r.content, r.etag);
-          return okJson({ path: r.path });
+        instrument("periodic_note_append", async () => {
+          const r = await appendToPeriodicNote(this.vault, this.cfg, args);
+          if (r.ok) this.index.upsertFromContent(r.value.path, r.value.content, r.value.etag);
+          return fromToolResult(r, (v) => JSON.stringify({ path: v.path, id: v.id }));
         }),
     );
 
