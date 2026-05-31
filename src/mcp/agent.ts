@@ -199,7 +199,7 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
 
     this.server.tool(
       "read_note",
-      "Read the full contents of a single markdown note. The note body is returned as the first text block (raw markdown, including the frontmatter). A second text block always follows containing JSON `{permalink?, frontmatter}` — `frontmatter` is the parsed YAML metadata object (empty `{}` if none), and `permalink` (the short HTTP URL that resolves into Obsidian via the link-resolver Worker) is present only when PERMALINK_BASE_URL is configured. Clients that only inspect content[0] still get the raw body unchanged.",
+      "Read the full contents of a single markdown note. The note body is returned as the first text block (raw markdown, including the frontmatter). A second text block always follows containing JSON `{permalink?, etag, frontmatter}` — `frontmatter` is the parsed YAML metadata object (empty `{}` if none), `etag` is the note's current R2 etag (pass it back as `if_match` on a later replace_note/replace_body/patch_note/patch_frontmatter to make that edit conditional — the edit then fails with reason='precondition_failed' instead of silently overwriting a change another writer made in between), and `permalink` (the short HTTP URL that resolves into Obsidian via the link-resolver Worker) is present only when PERMALINK_BASE_URL is configured. Clients that only inspect content[0] still get the raw body unchanged.",
       { path: NotePath },
       async ({ path }) =>
         instrument("read_note", async () =>
@@ -207,8 +207,8 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
             v.content,
             JSON.stringify(
               v.permalink
-                ? { permalink: v.permalink, frontmatter: v.frontmatter }
-                : { frontmatter: v.frontmatter },
+                ? { permalink: v.permalink, etag: v.etag, frontmatter: v.frontmatter }
+                : { etag: v.etag, frontmatter: v.frontmatter },
             ),
           ]),
         ),
@@ -250,8 +250,8 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
 
     this.server.tool(
       "replace_note",
-      "Full overwrite of a note — replaces everything including frontmatter, EXCEPT the note's `id:` field, which is always preserved from the existing note (or freshly minted if absent). External links keyed on the id stay stable across full-content rewrites. Returns JSON `{path, etag, permalink}` on success. Use only when authoring the entire file content, including the YAML frontmatter block. For body-only edits that preserve frontmatter, use replace_body. For targeted edits to specific lines, use patch_note. Fails with reason='not_found' if the note does not exist, reason='malformed_frontmatter' if the SUPPLIED content has an unterminated `---` opener (an unterminated frontmatter in the existing note is salvaged — a fresh id is minted on top).",
-      { path: NotePath, content: z.string() },
+      "Full overwrite of a note — replaces everything including frontmatter, EXCEPT the note's `id:` field, which is always preserved from the existing note (or freshly minted if absent). External links keyed on the id stay stable across full-content rewrites. Returns JSON `{path, etag, permalink}` on success. Use only when authoring the entire file content, including the YAML frontmatter block. For body-only edits that preserve frontmatter, use replace_body. For targeted edits to specific lines, use patch_note. Fails with reason='not_found' if the note does not exist, reason='malformed_frontmatter' if the SUPPLIED content has an unterminated `---` opener (an unterminated frontmatter in the existing note is salvaged — a fresh id is minted on top). Pass optional `if_match` (an etag from read_note/parse_frontmatter or a prior write) to make this conditional — it then fails with reason='precondition_failed' if the note changed since, instead of silently overwriting a concurrent edit.",
+      { path: NotePath, content: z.string(), if_match: z.string().optional() },
       async (args) =>
         instrument("replace_note", async () => {
           const r = await replaceNote(this.vault, this.cfg, args);
@@ -264,8 +264,8 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
 
     this.server.tool(
       "replace_body",
-      "Replaces the body of a note (everything after the closing --- of the frontmatter) while preserving the existing frontmatter exactly. Returns JSON `{path, etag, permalink}` on success. Use when rewriting note content but keeping the note's identity, metadata, tags, and timestamps. For targeted edits to specific lines, prefer patch_note. For full overwrite including frontmatter, use replace_note. Fails with reason='not_found' if the note does not exist, reason='malformed_frontmatter' if the existing frontmatter is unterminated.",
-      { path: NotePath, body: z.string() },
+      "Replaces the body of a note (everything after the closing --- of the frontmatter) while preserving the existing frontmatter exactly. Returns JSON `{path, etag, permalink}` on success. Use when rewriting note content but keeping the note's identity, metadata, tags, and timestamps. For targeted edits to specific lines, prefer patch_note. For full overwrite including frontmatter, use replace_note. Fails with reason='not_found' if the note does not exist, reason='malformed_frontmatter' if the existing frontmatter is unterminated. Pass optional `if_match` (an etag from read_note/parse_frontmatter or a prior write) to make this conditional — it then fails with reason='precondition_failed' if the note changed since, instead of silently overwriting a concurrent edit.",
+      { path: NotePath, body: z.string(), if_match: z.string().optional() },
       async (args) =>
         instrument("replace_body", async () => {
           const r = await replaceBody(this.vault, this.cfg, args);
@@ -278,12 +278,13 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
 
     this.server.tool(
       "patch_note",
-      "Replace an anchor string within an existing note while preserving everything else. Returns JSON `{path, etag, count, permalink}` on success. Fails with reason='anchor_not_found' (anchor missing), 'ambiguous' (anchor appears multiple times — pass replace_all=true to replace all), or 'no_op' (old_str equals new_str). Use this for surgical edits.",
+      "Replace an anchor string within an existing note while preserving everything else. Returns JSON `{path, etag, count, permalink}` on success. Fails with reason='anchor_not_found' (anchor missing), 'ambiguous' (anchor appears multiple times — pass replace_all=true to replace all), or 'no_op' (old_str equals new_str). Use this for surgical edits. Pass optional `if_match` (an etag from read_note/parse_frontmatter or a prior write) to make this conditional — it then fails with reason='precondition_failed' if the note changed since, instead of silently overwriting a concurrent edit.",
       {
         path: NotePath,
         old_str: z.string().min(1),
         new_str: z.string(),
         replace_all: z.boolean().optional(),
+        if_match: z.string().optional(),
       },
       async (args) =>
         instrument("patch_note", async () => {
@@ -346,23 +347,24 @@ export class ObsidianMCP extends McpAgent<Env, never, Props> {
 
     this.server.tool(
       "parse_frontmatter",
-      "Return the parsed YAML frontmatter of a note as an object, plus a `permalink` field (the short HTTP URL that resolves into Obsidian, null when PERMALINK_BASE_URL is unset). Response shape: `{frontmatter, permalink}`. Fails with reason='not_found' if the note does not exist.",
+      "Return the parsed YAML frontmatter of a note as an object, plus the note's current `etag` and a `permalink` field (the short HTTP URL that resolves into Obsidian, null when PERMALINK_BASE_URL is unset). Response shape: `{frontmatter, etag, permalink}`. Pass `etag` back as `if_match` on a later write to make it conditional (reason='precondition_failed' on a concurrent change). Fails with reason='not_found' if the note does not exist.",
       { path: NotePath },
       async (args) =>
         instrument("parse_frontmatter", async () =>
           fromToolResult(await parseFrontmatter(this.vault, this.cfg, args), (v) =>
-            JSON.stringify({ frontmatter: v.frontmatter, permalink: v.permalink }),
+            JSON.stringify({ frontmatter: v.frontmatter, etag: v.etag, permalink: v.permalink }),
           ),
         ),
     );
 
     this.server.tool(
       "patch_frontmatter",
-      "Set and/or unset top-level YAML frontmatter fields on a note without rewriting the file. Edits happen at the line level, so untouched fields, key order, and comments are preserved exactly. `set` is an object of field→value (value may be a string, number, boolean, or an array of those — nested objects are rejected); `unset` is a list of field names to remove. The note's `id:` is immutable here: naming `id` in either `set` or `unset` fails with reason='id_immutable'. An id is ensured on write (minted if the note had none and returned in the result). Prefer this over patch_note for metadata edits — it cannot accidentally clip the id line. Returns JSON `{path, etag, id, permalink, changed_keys, removed_keys}`. Fails with reason='not_found' if the note is missing, reason='no_op' if both set and unset are empty, reason='unsupported_block_value' (with the offending `key`) if a targeted field holds a multi-line/block-style value — edit those by hand via replace_note.",
+      "Set and/or unset top-level YAML frontmatter fields on a note without rewriting the file. Edits happen at the line level, so untouched fields, key order, and comments are preserved exactly. `set` is an object of field→value (value may be a string, number, boolean, or an array of those — nested objects are rejected); `unset` is a list of field names to remove. The note's `id:` is immutable here: naming `id` in either `set` or `unset` fails with reason='id_immutable'. An id is ensured on write (minted if the note had none and returned in the result). Prefer this over patch_note for metadata edits — it cannot accidentally clip the id line. Returns JSON `{path, etag, id, permalink, changed_keys, removed_keys}`. Fails with reason='not_found' if the note is missing, reason='no_op' if both set and unset are empty, reason='unsupported_block_value' (with the offending `key`) if a targeted field holds a multi-line/block-style value — edit those by hand via replace_note. Pass optional `if_match` (an etag from read_note/parse_frontmatter or a prior write) to make this conditional — it then fails with reason='precondition_failed' if the note changed since, instead of silently overwriting a concurrent edit.",
       {
         path: NotePath,
         set: z.record(z.string(), FmValue).optional(),
         unset: z.array(z.string().min(1)).optional(),
+        if_match: z.string().optional(),
       },
       async (args) =>
         instrument("patch_frontmatter", async () => {

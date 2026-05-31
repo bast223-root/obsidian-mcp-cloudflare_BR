@@ -37,12 +37,14 @@ export async function readNote(
   ToolResult<{
     path: string;
     content: string;
+    etag: string;
     permalink: string | null;
     frontmatter: Record<string, unknown>;
   }>
 > {
-  const body = await c.get(args.path);
-  if (body === null) return err("not_found", { path: args.path });
+  const obj = await c.getWithEtag(args.path);
+  if (obj === null) return err("not_found", { path: args.path });
+  const body = obj.body;
   const id = extractIdFromFrontmatter(body);
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, id);
   // parseNote → gray-matter → js-yaml throws on malformed YAML. read_note must
@@ -54,7 +56,24 @@ export async function readNote(
   } catch {
     frontmatter = {};
   }
-  return ok({ path: args.path, content: body, permalink, frontmatter });
+  return ok({ path: args.path, content: body, etag: obj.etag, permalink, frontmatter });
+}
+
+/**
+ * Write `content` to `path`, honoring an optional `if_match` etag precondition.
+ * Returns the new etag, or `null` when the precondition failed (the caller must
+ * surface `precondition_failed`). With no `if_match` it is an unconditional put,
+ * preserving prior last-write-wins behavior for callers that don't opt in.
+ */
+async function writeGuarded(
+  c: R2Client,
+  path: string,
+  content: string,
+  ifMatch: string | undefined,
+): Promise<string | null> {
+  return ifMatch === undefined
+    ? await c.put(path, content)
+    : await c.putIfMatch(path, content, ifMatch);
 }
 
 export async function createNote(
@@ -88,7 +107,7 @@ export async function createNote(
 export async function replaceNote(
   c: R2Client,
   cfg: VaultConfig,
-  args: { path: string; content: string },
+  args: { path: string; content: string; if_match?: string },
 ): Promise<
   ToolResult<{
     path: string;
@@ -121,7 +140,8 @@ export async function replaceNote(
     }
     throw e;
   }
-  const etag = await c.put(args.path, content);
+  const etag = await writeGuarded(c, args.path, content, args.if_match);
+  if (etag === null) return err("precondition_failed", { path: args.path });
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, finalId);
   return ok({ path: args.path, etag, content, permalink, id: finalId });
 }
@@ -129,7 +149,7 @@ export async function replaceNote(
 export async function replaceBody(
   c: R2Client,
   cfg: VaultConfig,
-  args: { path: string; body: string },
+  args: { path: string; body: string; if_match?: string },
 ): Promise<
   ToolResult<{
     path: string;
@@ -151,7 +171,8 @@ export async function replaceBody(
     throw e;
   }
   const content = split.frontmatter === null ? args.body : split.frontmatter + args.body;
-  const etag = await c.put(args.path, content);
+  const etag = await writeGuarded(c, args.path, content, args.if_match);
+  if (etag === null) return err("precondition_failed", { path: args.path });
   const id = extractIdFromFrontmatter(content);
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, id);
   return ok({ path: args.path, etag, content, permalink, id });
@@ -372,7 +393,7 @@ async function comoveAttachments(
 export async function patchNote(
   c: R2Client,
   cfg: VaultConfig,
-  args: { path: string; old_str: string; new_str: string; replace_all?: boolean },
+  args: { path: string; old_str: string; new_str: string; replace_all?: boolean; if_match?: string },
 ): Promise<
   ToolResult<{
     path: string;
@@ -410,7 +431,8 @@ export async function patchNote(
   // with no substitution layer. Single-replace case (count === 1) gives
   // parts[0] + new_str + parts[1], identical to a non-metacharacter replace.
   const next = parts.join(args.new_str);
-  const etag = await c.put(args.path, next);
+  const etag = await writeGuarded(c, args.path, next, args.if_match);
+  if (etag === null) return err("precondition_failed", { path: args.path });
   const id = extractIdFromFrontmatter(next);
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, id);
   return ok({ path: args.path, count, etag, content: next, permalink, id });

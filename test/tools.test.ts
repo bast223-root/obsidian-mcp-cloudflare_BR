@@ -99,10 +99,16 @@ describe("note tools", () => {
     const c = new R2Client(env.VAULT, cfg);
     await c.put("n.md", "body");
     const r = await readNote(c, cfg, { path: "n.md" });
-    expect(r).toEqual({
-      ok: true,
-      value: { path: "n.md", content: "body", permalink: null, frontmatter: {} },
-    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toMatchObject({
+        path: "n.md",
+        content: "body",
+        permalink: null,
+        frontmatter: {},
+      });
+      expect(typeof r.value.etag).toBe("string");
+    }
   });
 
   it("readNote returns not_found for a missing note", async () => {
@@ -732,7 +738,11 @@ describe("metadata tools", () => {
     const c = new R2Client(env.VAULT, cfg);
     await c.put("n.md", "---\ntitle: T\n---\nbody");
     const r = await parseFrontmatter(c, cfg, { path: "n.md" });
-    expect(r).toEqual({ ok: true, value: { frontmatter: { title: "T" }, permalink: null } });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toMatchObject({ frontmatter: { title: "T" }, permalink: null });
+      expect(typeof r.value.etag).toBe("string");
+    }
   });
 
   it("parseFrontmatter returns not_found for a missing note", async () => {
@@ -831,13 +841,14 @@ describe("permalink integration", () => {
     const c = new R2Client(env.VAULT, cfgWithPermalink);
     await c.put("n.md", `---\nid: ${ID}\ntitle: T\n---\nbody`);
     const r = await parseFrontmatter(c, cfgWithPermalink, { path: "n.md" });
-    expect(r).toEqual({
-      ok: true,
-      value: {
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toMatchObject({
         frontmatter: { id: ID, title: "T" },
         permalink: `https://o.example.test/n/${ID}?f=n`,
-      },
-    });
+      });
+      expect(typeof r.value.etag).toBe("string");
+    }
   });
 
   it("generatePermalink returns kind='id' when an id is present", async () => {
@@ -1621,5 +1632,106 @@ describe("attachment tools", () => {
     }
     // Nothing was written to the vault.
     expect(await c.getBinary("files/installer.exe")).toBeNull();
+  });
+});
+
+describe("if_match optimistic-concurrency precondition", () => {
+  beforeEach(reset);
+
+  it("read_note surfaces the current etag, which round-trips as a valid if_match", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await createNote(c, cfg, { path: "n.md", content: "v1" });
+    const read = await readNote(c, cfg, { path: "n.md" });
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    expect(typeof read.value.etag).toBe("string");
+    // Same etag, no concurrent change → the conditional write commits.
+    const r = await replaceBody(c, cfg, { path: "n.md", body: "edited\n", if_match: read.value.etag });
+    expect(r.ok).toBe(true);
+  });
+
+  it("replace_body commits when if_match matches and bumps the etag", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const created = await createNote(c, cfg, { path: "n.md", content: "v1" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const r = await replaceBody(c, cfg, {
+      path: "n.md",
+      body: "new body\n",
+      if_match: created.value.etag,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.etag).not.toBe(created.value.etag);
+      expect(await c.get("n.md")).toContain("new body");
+    }
+  });
+
+  it("replace_body returns precondition_failed on a stale if_match and does NOT overwrite", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const created = await createNote(c, cfg, { path: "n.md", content: "v1" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const stale = created.value.etag;
+    // A concurrent writer changes the note (different content → new etag).
+    await c.put("n.md", "---\nid: keep\n---\nconcurrent winner\n");
+    const r = await replaceBody(c, cfg, { path: "n.md", body: "my body\n", if_match: stale });
+    expect(r).toMatchObject({ ok: false, reason: "precondition_failed", path: "n.md" });
+    const after = await c.get("n.md");
+    expect(after).toContain("concurrent winner");
+    expect(after).not.toContain("my body");
+  });
+
+  it("patch_note returns precondition_failed on a stale if_match (anchor still present)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const created = await createNote(c, cfg, { path: "n.md", content: "anchor here\n" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const stale = created.value.etag;
+    // Concurrent change keeps the anchor (so patch reaches the write) but bumps the etag.
+    await c.put("n.md", "---\nid: keep\n---\nanchor here plus extra\n");
+    const r = await patchNote(c, cfg, {
+      path: "n.md",
+      old_str: "anchor here",
+      new_str: "changed",
+      if_match: stale,
+    });
+    expect(r).toMatchObject({ ok: false, reason: "precondition_failed", path: "n.md" });
+    expect(await c.get("n.md")).toContain("anchor here plus extra");
+  });
+
+  it("patch_frontmatter returns precondition_failed on a stale if_match", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const created = await createNote(c, cfg, { path: "n.md", content: "---\ntitle: A\n---\nbody\n" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const stale = created.value.etag;
+    await c.put("n.md", "---\ntitle: Z\nid: keep\n---\nother body\n");
+    const r = await patchFrontmatter(c, cfg, { path: "n.md", set: { title: "B" }, if_match: stale });
+    expect(r).toMatchObject({ ok: false, reason: "precondition_failed", path: "n.md" });
+  });
+
+  it("replace_note commits when if_match matches", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const created = await createNote(c, cfg, { path: "n.md", content: "v1" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const r = await replaceNote(c, cfg, {
+      path: "n.md",
+      content: "---\ntitle: New\n---\nfresh\n",
+      if_match: created.value.etag,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(await c.get("n.md")).toContain("fresh");
+  });
+
+  it("write tools are unchanged when no if_match is supplied (last-write-wins preserved)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await createNote(c, cfg, { path: "n.md", content: "v1" });
+    // No if_match → unconditional success even after a concurrent change.
+    await c.put("n.md", "---\nid: keep\n---\nsomeone else\n");
+    const r = await replaceBody(c, cfg, { path: "n.md", body: "mine wins\n" });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(await c.get("n.md")).toContain("mine wins");
   });
 });

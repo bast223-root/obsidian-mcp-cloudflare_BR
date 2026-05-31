@@ -38,11 +38,38 @@ export class R2Client {
     return obj ? await obj.text() : null;
   }
 
+  /**
+   * Read body + current etag in one call. Used by read paths that surface the
+   * etag so callers can pass it back as an `if_match` precondition on a later
+   * write (optimistic concurrency).
+   */
+  async getWithEtag(path: string): Promise<{ body: string; etag: string } | null> {
+    const obj = await this.bucket.get(this.toKey(path));
+    if (!obj) return null;
+    return { body: await obj.text(), etag: obj.etag };
+  }
+
   async put(path: string, body: string): Promise<string> {
     const obj = await this.bucket.put(this.toKey(path), body, {
       httpMetadata: { contentType: "text/markdown; charset=utf-8" },
     });
     return obj.etag;
+  }
+
+  /**
+   * Conditional write: only commits if the object's current etag equals
+   * `ifMatch`. Returns the new etag on success, or `null` if the precondition
+   * failed (another writer changed or created the object since `ifMatch`). R2
+   * evaluates `onlyIf` at write time, so this is an atomic optimistic-concurrency
+   * guard with no read-then-write TOCTOU window — the fix for silent
+   * last-write-wins clobbering between concurrent editors.
+   */
+  async putIfMatch(path: string, body: string, ifMatch: string): Promise<string | null> {
+    const obj = await this.bucket.put(this.toKey(path), body, {
+      httpMetadata: { contentType: "text/markdown; charset=utf-8" },
+      onlyIf: { etagMatches: ifMatch },
+    });
+    return obj ? obj.etag : null;
   }
 
   async delete(path: string): Promise<void> {

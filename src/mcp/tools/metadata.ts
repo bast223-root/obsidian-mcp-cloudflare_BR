@@ -19,13 +19,13 @@ export async function parseFrontmatter(
   cfg: VaultConfig,
   args: { path: string },
 ): Promise<
-  ToolResult<{ frontmatter: Record<string, unknown>; permalink: string | null }>
+  ToolResult<{ frontmatter: Record<string, unknown>; etag: string; permalink: string | null }>
 > {
-  const body = await c.get(args.path);
-  if (body === null) return err("not_found", { path: args.path });
-  const id = extractIdFromFrontmatter(body);
+  const obj = await c.getWithEtag(args.path);
+  if (obj === null) return err("not_found", { path: args.path });
+  const id = extractIdFromFrontmatter(obj.body);
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, id);
-  return ok({ frontmatter: parseNote(body).frontmatter, permalink });
+  return ok({ frontmatter: parseNote(obj.body).frontmatter, etag: obj.etag, permalink });
 }
 
 /**
@@ -43,6 +43,7 @@ export async function patchFrontmatter(
     path: string;
     set?: Record<string, FrontmatterScalar | FrontmatterScalar[]>;
     unset?: string[];
+    if_match?: string;
   },
 ): Promise<
   ToolResult<{
@@ -86,7 +87,11 @@ export async function patchFrontmatter(
   // an existing id — editFrontmatter cannot touch the id line (id is rejected
   // above), and ensureIdInFrontmatter only mints when absent.
   const { content, id } = ensureIdInFrontmatter(edited.content, generateNoteId);
-  const etag = await c.put(args.path, content);
+  const etag =
+    args.if_match === undefined
+      ? await c.put(args.path, content)
+      : await c.putIfMatch(args.path, content, args.if_match);
+  if (etag === null) return err("precondition_failed", { path: args.path });
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, id);
   return ok({
     path: args.path,
