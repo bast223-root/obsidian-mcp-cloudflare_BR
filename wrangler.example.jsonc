@@ -27,7 +27,14 @@
   ],
   "vars": {
     "VAULT_PREFIX": "${VAULT_PREFIX}",
+    // Periodic-note path templates, one per cadence. Tokens: {{YYYY}} {{MM}}
+    // {{DD}} {{Q}} {{WW}} (ISO week) {{GGGG}} (ISO week-year) {{YYYY-MM-DD}}.
+    // An empty value disables that cadence (period_not_configured).
     "DAILY_NOTE_PATH_TEMPLATE": "${DAILY_NOTE_PATH_TEMPLATE}",
+    "WEEKLY_NOTE_PATH_TEMPLATE": "${WEEKLY_NOTE_PATH_TEMPLATE}",
+    "MONTHLY_NOTE_PATH_TEMPLATE": "${MONTHLY_NOTE_PATH_TEMPLATE}",
+    "QUARTERLY_NOTE_PATH_TEMPLATE": "${QUARTERLY_NOTE_PATH_TEMPLATE}",
+    "YEARLY_NOTE_PATH_TEMPLATE": "${YEARLY_NOTE_PATH_TEMPLATE}",
     "PERMALINK_BASE_URL": "${PERMALINK_BASE_URL}",
     // This Worker's own public origin. Used to build tappable upload links
     // (create_upload_link tool) and serve the /upload page. Derived from the

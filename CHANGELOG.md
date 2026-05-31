@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: the daily-note tools are renamed and generalized to all periodic cadences.** `get_or_create_daily_note` → **`periodic_note_get_or_create`** and `append_to_daily_note` → **`periodic_note_append`**, each now taking a required `period` argument (`daily`/`weekly`/`monthly`/`quarterly`/`yearly`). The optional `date` is an anchor (`YYYY-MM-DD`, default today) bucketed into the week/month/quarter/year containing it. The old tool names are removed — update any saved chats/automations, and reconnect clients to refresh the tool registry (see the README cache gotcha).
+- **`read_note` always emits a second JSON metadata block.** It was `{permalink}` only when `PERMALINK_BASE_URL` was set; it is now `{permalink?, frontmatter}` and always present. `frontmatter` is the parsed YAML object (empty `{}` if none); `permalink` stays conditional. The raw body in `content[0]` is unchanged, so clients reading only `content[0]` are unaffected.
+
+### Added
+
+- **`patch_frontmatter` tool** — set and/or unset top-level YAML frontmatter fields without rewriting the file. Edits are line-level, so untouched fields, key order, and comments are preserved byte-for-byte. The note's `id:` is immutable (naming it in `set`/`unset` fails with `reason='id_immutable'`) and is ensured on write, so this can never clip the resolver-critical id the way a careless `patch_note` could. Values are scalars or inline scalar arrays; a key holding a multi-line/block-style value is refused (`reason='unsupported_block_value'`, with the offending `key`) rather than corrupted. Returns `{path, etag, id, permalink, changed_keys, removed_keys}`.
+- **Weekly / monthly / quarterly / yearly periodic notes**, configured by four new opt-in env vars (`WEEKLY_/MONTHLY_/QUARTERLY_/YEARLY_NOTE_PATH_TEMPLATE`). New path tokens: `{{Q}}` (quarter), `{{WW}}` (ISO-8601 week, Monday-start), `{{GGGG}}` (ISO week-year — differs from `{{YYYY}}` near year boundaries, pair it with `{{WW}}`). A cadence with no template returns `reason='period_not_configured'`.
+- **Note-write tools now return the resulting `id`.** `create_note`, `replace_note`, `replace_body`, and `patch_note` include `id` in their JSON result. `create_note`'s description now states the id is auto-minted when the content omits one (callers should not pre-generate one) and a caller-supplied id is honored verbatim.
+
 ## [0.13.0] - 2026-05-30
 
 ### Added

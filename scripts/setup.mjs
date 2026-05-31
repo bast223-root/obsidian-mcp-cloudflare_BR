@@ -103,6 +103,15 @@ function ensureKvNamespace(env) {
 function applyDefaults(env) {
   if (env.VAULT_PREFIX === undefined) env.VAULT_PREFIX = "";
   if (env.DAILY_NOTE_PATH_TEMPLATE === undefined) env.DAILY_NOTE_PATH_TEMPLATE = "Daily Notes/{{YYYY-MM-DD}}.md";
+  // Other periodic cadences default to empty (disabled) — opt in per cadence.
+  for (const v of [
+    "WEEKLY_NOTE_PATH_TEMPLATE",
+    "MONTHLY_NOTE_PATH_TEMPLATE",
+    "QUARTERLY_NOTE_PATH_TEMPLATE",
+    "YEARLY_NOTE_PATH_TEMPLATE",
+  ]) {
+    if (env[v] === undefined) env[v] = "";
+  }
   if (env.PERMALINK_BASE_URL === undefined) env.PERMALINK_BASE_URL = "";
   // Default-closed: empty means upload_attachment_url can fetch from no host.
   if (env.ATTACHMENT_FETCH_HOST_ALLOWLIST === undefined) env.ATTACHMENT_FETCH_HOST_ALLOWLIST = "";

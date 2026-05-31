@@ -9,6 +9,7 @@ import {
   extractIdFromFrontmatter,
   extractWikilinks,
   generateNoteId,
+  parseNote,
   rewriteEmbedTargetForMove,
   rewriteWikilinksForMove,
   setIdInFrontmatter,
@@ -32,19 +33,43 @@ export async function readNote(
   c: R2Client,
   cfg: VaultConfig,
   args: { path: string },
-): Promise<ToolResult<{ path: string; content: string; permalink: string | null }>> {
+): Promise<
+  ToolResult<{
+    path: string;
+    content: string;
+    permalink: string | null;
+    frontmatter: Record<string, unknown>;
+  }>
+> {
   const body = await c.get(args.path);
   if (body === null) return err("not_found", { path: args.path });
   const id = extractIdFromFrontmatter(body);
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, id);
-  return ok({ path: args.path, content: body, permalink });
+  // parseNote → gray-matter → js-yaml throws on malformed YAML. read_note must
+  // stay throw-free (it returns raw bytes); a note a user hand-broke in Obsidian
+  // should still be readable, just with empty parsed frontmatter.
+  let frontmatter: Record<string, unknown> = {};
+  try {
+    frontmatter = parseNote(body).frontmatter;
+  } catch {
+    frontmatter = {};
+  }
+  return ok({ path: args.path, content: body, permalink, frontmatter });
 }
 
 export async function createNote(
   c: R2Client,
   cfg: VaultConfig,
   args: { path: string; content: string },
-): Promise<ToolResult<{ path: string; etag: string; content: string; permalink: string | null }>> {
+): Promise<
+  ToolResult<{
+    path: string;
+    etag: string;
+    content: string;
+    permalink: string | null;
+    id: string | null;
+  }>
+> {
   if (await c.head(args.path)) return err("exists", { path: args.path });
   let prepared;
   try {
@@ -57,14 +82,22 @@ export async function createNote(
   }
   const etag = await c.put(args.path, prepared.content);
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, prepared.id);
-  return ok({ path: args.path, etag, content: prepared.content, permalink });
+  return ok({ path: args.path, etag, content: prepared.content, permalink, id: prepared.id });
 }
 
 export async function replaceNote(
   c: R2Client,
   cfg: VaultConfig,
   args: { path: string; content: string },
-): Promise<ToolResult<{ path: string; etag: string; content: string; permalink: string | null }>> {
+): Promise<
+  ToolResult<{
+    path: string;
+    etag: string;
+    content: string;
+    permalink: string | null;
+    id: string | null;
+  }>
+> {
   const existing = await c.get(args.path);
   if (existing === null) return err("not_found", { path: args.path });
   // Preserve the existing id if there is one; otherwise mint or accept the
@@ -90,14 +123,22 @@ export async function replaceNote(
   }
   const etag = await c.put(args.path, content);
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, finalId);
-  return ok({ path: args.path, etag, content, permalink });
+  return ok({ path: args.path, etag, content, permalink, id: finalId });
 }
 
 export async function replaceBody(
   c: R2Client,
   cfg: VaultConfig,
   args: { path: string; body: string },
-): Promise<ToolResult<{ path: string; etag: string; content: string; permalink: string | null }>> {
+): Promise<
+  ToolResult<{
+    path: string;
+    etag: string;
+    content: string;
+    permalink: string | null;
+    id: string | null;
+  }>
+> {
   const existing = await c.get(args.path);
   if (existing === null) return err("not_found", { path: args.path });
   let split;
@@ -113,7 +154,7 @@ export async function replaceBody(
   const etag = await c.put(args.path, content);
   const id = extractIdFromFrontmatter(content);
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, id);
-  return ok({ path: args.path, etag, content, permalink });
+  return ok({ path: args.path, etag, content, permalink, id });
 }
 
 export async function deleteNote(
@@ -309,6 +350,7 @@ export async function patchNote(
     etag: string;
     content: string;
     permalink: string | null;
+    id: string | null;
   }>
 > {
   if (args.old_str === args.new_str) return err("no_op", { path: args.path });
@@ -341,5 +383,5 @@ export async function patchNote(
   const etag = await c.put(args.path, next);
   const id = extractIdFromFrontmatter(next);
   const permalink = buildPermalink(cfg.permalinkBaseUrl, args.path, id);
-  return ok({ path: args.path, count, etag, content: next, permalink });
+  return ok({ path: args.path, count, etag, content: next, permalink, id });
 }

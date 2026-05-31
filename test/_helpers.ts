@@ -6,7 +6,13 @@ import type { VaultConfig } from "../src/types";
 export function makeCfg(overrides: Partial<VaultConfig> = {}): VaultConfig {
   return {
     prefix: "",
-    dailyNotePathTemplate: "Daily Notes/{{YYYY-MM-DD}}.md",
+    periodicNoteTemplates: {
+      daily: "Daily Notes/{{YYYY-MM-DD}}.md",
+      weekly: "Weekly Notes/{{GGGG}}-W{{WW}}.md",
+      monthly: "Monthly Notes/{{YYYY}}-{{MM}}.md",
+      quarterly: "Quarterly Notes/{{YYYY}}-Q{{Q}}.md",
+      yearly: "Yearly Notes/{{YYYY}}.md",
+    },
     permalinkBaseUrl: "",
     attachmentsPathMode: "per_note_subfolder",
     attachmentsSubfolder: "files",

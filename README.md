@@ -47,20 +47,21 @@ Obsidian (Mac / iOS / iPad)
 | Tool | Description |
 |------|-------------|
 | `list_notes` | List all `.md` files in the vault |
-| `read_note(path)` | Returns the raw markdown as the first content block. When `PERMALINK_BASE_URL` is set, a second JSON block `{permalink}` follows. Failure: `not_found` |
+| `read_note(path)` | Returns the raw markdown as the first content block. A second JSON block `{permalink?, frontmatter}` always follows — `frontmatter` is the parsed YAML object (empty `{}` if none); `permalink` is present only when `PERMALINK_BASE_URL` is set. `content[0]` is byte-unchanged. Failure: `not_found` |
 | `search_notes(query, limit?)` | Case-insensitive substring search across note bodies and file paths (DO-SQLite index). Query must be ≈48 bytes or fewer (a DO-SQLite `LIKE` limit); longer → `query_too_long` |
-| `create_note(path, content)` | Create a new note. If the supplied content has no `id:` in frontmatter, a 21-char nanoid is minted and injected as the first field. Returns JSON `{path, etag, permalink}`. Failure: `exists` |
-| `replace_note(path, content)` | **Full overwrite** including frontmatter. Always preserves the existing note's `id:` (or mints one if absent) — id-stripping or id-changing through `replace_note` is impossible. Returns JSON `{path, etag, permalink}`. Failures: `not_found`, `malformed_frontmatter` (only if the supplied content has an unterminated `---`). For body-only edits use `replace_body`; for surgical edits prefer `patch_note` |
-| `replace_body(path, body)` | Replace the body of a note while preserving the frontmatter byte-for-byte. Returns JSON `{path, etag, permalink}`. Failures: `not_found`, `malformed_frontmatter` |
-| `patch_note(path, old_str, new_str, replace_all?)` | Targeted in-place edit; `old_str` must be unique unless `replace_all: true`. Returns JSON `{path, etag, count, permalink}`. Failures: `not_found`, `anchor_not_found`, `ambiguous`, `no_op` |
+| `create_note(path, content)` | Create a new note. If the supplied content has no `id:` in frontmatter, a 21-char nanoid is minted and injected as the first field (don't pre-generate one yourself); a caller-supplied id is honored verbatim. Returns JSON `{path, etag, id, permalink}`. Failure: `exists` |
+| `replace_note(path, content)` | **Full overwrite** including frontmatter. Always preserves the existing note's `id:` (or mints one if absent) — id-stripping or id-changing through `replace_note` is impossible. Returns JSON `{path, etag, id, permalink}`. Failures: `not_found`, `malformed_frontmatter` (only if the supplied content has an unterminated `---`). For body-only edits use `replace_body`; for surgical edits prefer `patch_note` |
+| `replace_body(path, body)` | Replace the body of a note while preserving the frontmatter byte-for-byte. Returns JSON `{path, etag, id, permalink}`. Failures: `not_found`, `malformed_frontmatter` |
+| `patch_note(path, old_str, new_str, replace_all?)` | Targeted in-place edit; `old_str` must be unique unless `replace_all: true`. Returns JSON `{path, etag, count, id, permalink}`. Failures: `not_found`, `anchor_not_found`, `ambiguous`, `no_op` |
 | `move_note(from_path, to_path)` | Move or rename a note and rewrite every wikilink across the vault that pointed to the old path, preserving aliases, heading anchors, block refs, embeds, and full-path forms. Wikilinks inside fenced code blocks and inline code spans are not rewritten. Failure reasons: `not_found`, `exists`, `same_path` |
 | `delete_note(path)` | Delete a note from the vault. Idempotent |
-| `parse_frontmatter(path)` | Returns JSON `{frontmatter, permalink}` — the parsed YAML object plus the note's short HTTP permalink. Failure: `not_found` |
+| `parse_frontmatter(path)` | Returns JSON `{frontmatter, permalink}` — the parsed YAML object plus the note's short HTTP permalink. Failure: `not_found`. (For a full read, `read_note` now returns `frontmatter` too; use this when you want metadata without the body payload.) |
+| `patch_frontmatter(path, set?, unset?)` | Set/unset top-level frontmatter fields at the line level — untouched fields, key order, and comments are preserved. `set` values are scalars or inline scalar arrays. `id` is immutable (`id_immutable`); an id is ensured on write. Prefer over `patch_note` for metadata. Returns JSON `{path, etag, id, permalink, changed_keys, removed_keys}`. Failures: `not_found`, `no_op`, `id_immutable`, `unsupported_block_value` (a targeted field holds a multi-line/block value — edit by hand via `replace_note`) |
 | `generate_permalink(path)` | Returns JSON `{path, permalink, kind}` where `kind` is `"id"` (rename-stable, frontmatter-id lookup) or `"path"` (fragile fallback for un-id'd notes — run `backfill_ids` to upgrade). Failures: `not_found`, `permalink_disabled` |
 | `list_tags` | Aggregate all tags across the vault, frontmatter + inline `#tags` (parallel R2 fan-out) |
 | `list_backlinks(target)` | Find notes that contain a `[[target]]` wikilink (parallel R2 fan-out) |
-| `get_or_create_daily_note(date?)` | Create or fetch today's (or a given date's) daily note |
-| `append_to_daily_note(date?, content)` | Append a line to today's (or a given date's) daily note |
+| `periodic_note_get_or_create(period, date?)` | Create or fetch the periodic note for `period` (`daily`/`weekly`/`monthly`/`quarterly`/`yearly`) covering today (or the given `YYYY-MM-DD` anchor, bucketed into the containing week/month/quarter/year). Creates with the cadence's H1 + a fresh id. Returns JSON `{path, created, id}`. Failure: `period_not_configured` |
+| `periodic_note_append(period, date?, content)` | Append a line to the periodic note for `period` (creating it if absent). Returns JSON `{path, id}`. Failure: `period_not_configured` |
 | `backfill_ids(dryRun?, limit?, prefix?)` | Scan the vault and mint a nanoid `id:` for any note missing one. Default `dryRun: true`. Returns counts plus up to 10 example writes. Safe to re-run; existing ids (any scheme) are skipped |
 | `upload_attachment_url(source_url, filename?, target_note?, subfolder?, overwrite?, dest_path?)` | Fetch an HTTPS asset server-side and store it. Host must be in `ATTACHMENT_FETCH_HOST_ALLOWLIST` (**default-closed** — empty allowlist rejects every host with `host_not_allowed`); also SSRF-guarded (HTTPS only, no IP-literal/loopback hosts), all re-validated across redirects, size-capped, HTML rejected. Any failure is terminal (nothing written). Same return shape. Failures: `invalid_url`, `insecure_url`, `host_not_allowed`, `disallowed_host`, `too_many_redirects`, `fetch_failed`, `html_response`, `too_large`, `no_extension_inferable`, `disallowed_extension`, `exists` |
 | `read_attachment(path)` | Read an attachment. Image types return an MCP `image` content block + JSON metadata; non-image types return one JSON block with the base64 in `data_base64`. Only allowlisted extensions. Failures: `not_found`, `disallowed_extension` |
@@ -72,7 +73,7 @@ Obsidian (Mac / iOS / iPad)
 
 Tool failures use the MCP `isError: true` convention with a JSON-encoded body of the shape `{ ok: false, reason, ...context }`. Failures are not thrown as JSON-RPC errors, so they do not count as Durable Object RPC errors at the Cloudflare layer.
 
-Daily note paths follow the `DAILY_NOTE_PATH_TEMPLATE` env var (default: `Daily Notes/{{YYYY-MM-DD}}.md`).
+Periodic-note paths follow per-cadence env vars: `DAILY_NOTE_PATH_TEMPLATE` (default `Daily Notes/{{YYYY-MM-DD}}.md`) plus the opt-in `WEEKLY_/MONTHLY_/QUARTERLY_/YEARLY_NOTE_PATH_TEMPLATE` (empty by default ⇒ that cadence returns `period_not_configured`). Path tokens: `{{YYYY}}` year, `{{MM}}` month, `{{DD}}` day, `{{Q}}` quarter (1–4), `{{WW}}` ISO-8601 week (Monday-start), `{{GGGG}}` ISO week-year (differs from `{{YYYY}}` near year boundaries — pair with `{{WW}}`), `{{YYYY-MM-DD}}` daily composite. Month/quarter *names* are not supported (numeric tokens only).
 
 ## Stable note ids and external permalinks
 
@@ -82,6 +83,7 @@ Every note created or replaced through this MCP gets an `id:` field in its front
 - **`replace_note`**: existing note's id always wins. If the on-disk note has an id, it is preserved — even if the caller's content omits `id:` entirely or carries a *different* `id:` value (existing > supplied). If the on-disk note has no id, one is minted. id-stripping or id-changing through this tool is impossible by design.
 - **`replace_body`** and **`move_note`**: byte-preserve the entire frontmatter; the id passes through untouched.
 - **`patch_note`**: pure string find/replace on the body. The tool never reads or rewrites the `id:` line itself, but it offers no special protection — a patch whose `old_str` happens to overlap the `id:` line **will** strip or rewrite it. Keep `old_str` scoped to the content you intend to replace.
+- **`patch_frontmatter`**: cannot touch `id` at all — naming it in `set`/`unset` fails with `id_immutable`, and an id is ensured (minted if absent) on write. This is the id-safe way to edit metadata; prefer it over `patch_note` for frontmatter fields.
 - **`backfill_ids`**: mints a nanoid for every note missing an `id:`. Notes that already have an id of any scheme are skipped (so externally-minted UUIDs from Advanced URI round-trip unchanged). Default `dryRun: true`.
 
 The id is the anchor for [`Advanced URI`](https://github.com/Vinzent03/obsidian-advanced-uri) `uid=` lookups, which resolve against frontmatter directly — no path map, no client-side lookup table. Pair this MCP with the companion [`obsidian-link-resolver`](https://github.com/dszp/obsidian-link-resolver-cloudflare) Worker, which exposes three short HTTP routes that 302-redirect into Obsidian:
@@ -97,7 +99,7 @@ External systems (task managers, ticketing tools, automation flows) should refer
 As of 0.7.0, the MCP itself emits ready-built permalinks so AI clients don't need to know the URL shape:
 
 - Configured via `PERMALINK_BASE_URL` in `wrangler.jsonc` (e.g. `https://o.example.com`, pointing at your deployed `obsidian-link-resolver`). Empty/unset disables the feature — `permalink` fields become `null` and `generate_permalink` returns `reason='permalink_disabled'`.
-- Every note-returning tool (`read_note`, `create_note`, `replace_note`, `replace_body`, `patch_note`, `parse_frontmatter`) includes a `permalink` field in its response — `${BASE}/n/<id>?f=<basename>` when an id exists, or `${BASE}/p/?path=<encoded path>` as a fragile fallback.
+- Every note-returning tool (`read_note`, `create_note`, `replace_note`, `replace_body`, `patch_note`, `patch_frontmatter`, `parse_frontmatter`) includes a `permalink` field in its response — `${BASE}/n/<id>?f=<basename>` when an id exists, or `${BASE}/p/?path=<encoded path>` as a fragile fallback.
 - `generate_permalink(path)` returns `{path, permalink, kind: 'id' | 'path'}`. The `kind` discriminator tells callers whether the link is rename-stable. Use this when you have a path but not yet a note read.
 - The `?f=<basename-without-.md>` is a human-readability hint — the resolver ignores it and routes purely by id via Advanced URI's `uid=` lookup, so tampering with `?f=` cannot redirect the link.
 
@@ -173,7 +175,7 @@ Durable Object SQLite caps a `LIKE`/`GLOB` **pattern** at 50 bytes ([docs](https
 
 ### Concurrent-write race on create / update / append (latent, single-user)
 
-`create_note`, `replace_note`, `replace_body`, and `append_to_daily_note` perform a head-or-read followed by a put without any concurrency guard. In single-user MCP usage this is dormant — there's only ever one writer — but if two MCP clients ran concurrently, both could observe "no existing note", both could put, and the last write would silently win. Tracked for a future fix using R2 conditional writes (`onlyIf: { etagMatches }`).
+`create_note`, `replace_note`, `replace_body`, `patch_frontmatter`, and `periodic_note_append` perform a head-or-read followed by a put without any concurrency guard. In single-user MCP usage this is dormant — there's only ever one writer — but if two MCP clients ran concurrently, both could observe "no existing note", both could put, and the last write would silently win. Tracked for a future fix using R2 conditional writes (`onlyIf: { etagMatches }`).
 
 ## Security model
 
@@ -362,7 +364,7 @@ src/
 │   └── tools/
 │       ├── notes.ts    # list/read/create/replace/delete/patch (typed-result returns)
 │       ├── metadata.ts # parse_frontmatter, list_tags, list_backlinks
-│       ├── daily.ts    # daily-note helpers
+│       ├── periodic.ts # periodic-note helpers (daily/weekly/monthly/quarterly/yearly)
 │       └── admin.ts    # backfill_ids and other maintenance ops
 └── vault/
     ├── r2-client.ts    # R2 binding wrapper with prefix + path validation

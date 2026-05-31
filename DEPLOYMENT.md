@@ -60,7 +60,7 @@ Fill in:
 - **`MCP_HOSTNAME`** — the hostname this Worker should serve from (e.g. `mcp.example.com`). Must be a DNS name on a zone in the same Cloudflare account. Wrangler provisions the DNS record and TLS cert on first deploy. If you don't have a custom domain, leave blank and edit `wrangler.example.jsonc` to remove the `routes` block (you'll get a `*.workers.dev` URL instead).
 - **`R2_BUCKET_NAME`** — globally unique within your Cloudflare account; lowercase letters, digits, hyphens; 3–63 chars. The setup script will create this bucket.
 
-The optional vars (`VAULT_PREFIX`, `DAILY_NOTE_PATH_TEMPLATE`, `PERMALINK_BASE_URL`) have sensible defaults; see comments in `.env.example`.
+The optional vars (`VAULT_PREFIX`, `DAILY_NOTE_PATH_TEMPLATE`, the opt-in `WEEKLY_/MONTHLY_/QUARTERLY_/YEARLY_NOTE_PATH_TEMPLATE`, `PERMALINK_BASE_URL`) have sensible defaults; see comments in `.env.example`. A periodic cadence with no template returns `period_not_configured`.
 
 Leave `OAUTH_KV_ID` blank on first run — the setup script creates the KV namespace and writes the id back.
 
@@ -126,7 +126,7 @@ Expect tests to pass. The dry-run should list bindings matching your `.env`:
 - `MCP_OBJECT` (Durable Object)
 - `OAUTH_KV` (your KV id)
 - `VAULT` (your bucket name)
-- `VAULT_PREFIX`, `DAILY_NOTE_PATH_TEMPLATE`, `PERMALINK_BASE_URL` (environment variables)
+- `VAULT_PREFIX`, the periodic-note templates (`DAILY_/WEEKLY_/MONTHLY_/QUARTERLY_/YEARLY_NOTE_PATH_TEMPLATE`), `PERMALINK_BASE_URL` (environment variables)
 
 ### 7. Deploy
 

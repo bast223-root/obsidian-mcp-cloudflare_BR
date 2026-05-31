@@ -11,8 +11,8 @@ import {
   patchNote,
   moveNote,
 } from "../src/mcp/tools/notes";
-import { generatePermalink, parseFrontmatter } from "../src/mcp/tools/metadata";
-import { getOrCreateDailyNote, appendToDailyNote } from "../src/mcp/tools/daily";
+import { generatePermalink, parseFrontmatter, patchFrontmatter } from "../src/mcp/tools/metadata";
+import { getOrCreatePeriodicNote, appendToPeriodicNote } from "../src/mcp/tools/periodic";
 import { type NoteRow, type Store, VaultIndex } from "../src/vault/index-store";
 import { extractIdFromFrontmatter, extractTags, extractWikilinks } from "../src/vault/markdown";
 import {
@@ -99,7 +99,10 @@ describe("note tools", () => {
     const c = new R2Client(env.VAULT, cfg);
     await c.put("n.md", "body");
     const r = await readNote(c, cfg, { path: "n.md" });
-    expect(r).toEqual({ ok: true, value: { path: "n.md", content: "body", permalink: null } });
+    expect(r).toEqual({
+      ok: true,
+      value: { path: "n.md", content: "body", permalink: null, frontmatter: {} },
+    });
   });
 
   it("readNote returns not_found for a missing note", async () => {
@@ -848,29 +851,238 @@ describe("permalink integration", () => {
   });
 });
 
-describe("daily-note tools", () => {
+describe("periodic-note tools", () => {
   beforeEach(reset);
 
-  it("getOrCreateDailyNote creates a note at the templated path with an id", async () => {
+  it("getOrCreatePeriodicNote (daily) creates a note at the templated path with an id", async () => {
     const c = new R2Client(env.VAULT, cfg);
-    const res = await getOrCreateDailyNote(c, cfg, { date: "2026-05-11" });
-    expect(res.path).toBe("Daily Notes/2026-05-11.md");
-    expect(res.created).toBe(true);
-    expect(typeof res.etag).toBe("string");
-    expect(res.content).toContain("# 2026-05-11");
-    expect(extractIdFromFrontmatter(res.content ?? "")).toMatch(NANOID_RE);
-    const again = await getOrCreateDailyNote(c, cfg, { date: "2026-05-11" });
-    expect(again.created).toBe(false);
-    expect(again.etag).toBeNull();
-    expect(again.content).toBeNull();
+    const res = await getOrCreatePeriodicNote(c, cfg, { period: "daily", date: "2026-05-11" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.path).toBe("Daily Notes/2026-05-11.md");
+    expect(res.value.created).toBe(true);
+    expect(typeof res.value.etag).toBe("string");
+    expect(res.value.id).toMatch(NANOID_RE);
+    expect(res.value.content).toContain("# 2026-05-11");
+
+    const again = await getOrCreatePeriodicNote(c, cfg, { period: "daily", date: "2026-05-11" });
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    expect(again.value.created).toBe(false);
+    expect(again.value.etag).toBeNull();
+    expect(again.value.content).toBeNull();
+    // Existing note's id is read back, not re-minted.
+    expect(again.value.id).toBe(res.value.id);
   });
 
-  it("appendToDailyNote appends with a newline boundary", async () => {
+  it("getOrCreatePeriodicNote buckets the anchor into each cadence's path", async () => {
     const c = new R2Client(env.VAULT, cfg);
-    await appendToDailyNote(c, cfg, { date: "2026-05-11", content: "line1" });
-    await appendToDailyNote(c, cfg, { date: "2026-05-11", content: "line2" });
+    // 2026-05-11 is a Monday in ISO week 20.
+    const weekly = await getOrCreatePeriodicNote(c, cfg, { period: "weekly", date: "2026-05-11" });
+    expect(weekly.ok && weekly.value.path).toBe("Weekly Notes/2026-W20.md");
+    const monthly = await getOrCreatePeriodicNote(c, cfg, { period: "monthly", date: "2026-05-11" });
+    expect(monthly.ok && monthly.value.path).toBe("Monthly Notes/2026-05.md");
+    const quarterly = await getOrCreatePeriodicNote(c, cfg, {
+      period: "quarterly",
+      date: "2026-05-11",
+    });
+    expect(quarterly.ok && quarterly.value.path).toBe("Quarterly Notes/2026-Q2.md");
+    const yearly = await getOrCreatePeriodicNote(c, cfg, { period: "yearly", date: "2026-05-11" });
+    expect(yearly.ok && yearly.value.path).toBe("Yearly Notes/2026.md");
+    expect(weekly.ok && weekly.value.content).toContain("# 2026-W20");
+  });
+
+  it("getOrCreatePeriodicNote returns period_not_configured when the cadence has no template", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const noWeekly = makeCfg({
+      periodicNoteTemplates: { ...cfg.periodicNoteTemplates, weekly: null },
+    });
+    const res = await getOrCreatePeriodicNote(c, noWeekly, { period: "weekly" });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe("period_not_configured");
+    expect(res.period).toBe("weekly");
+  });
+
+  it("appendToPeriodicNote appends with a newline boundary", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await appendToPeriodicNote(c, cfg, { period: "daily", date: "2026-05-11", content: "line1" });
+    await appendToPeriodicNote(c, cfg, { period: "daily", date: "2026-05-11", content: "line2" });
     const body = await c.get("Daily Notes/2026-05-11.md");
     expect(body).toBe("line1\nline2\n");
+  });
+
+  it("appendToPeriodicNote returns period_not_configured for an unset cadence", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const noMonthly = makeCfg({
+      periodicNoteTemplates: { ...cfg.periodicNoteTemplates, monthly: null },
+    });
+    const res = await appendToPeriodicNote(c, noMonthly, { period: "monthly", content: "x" });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe("period_not_configured");
+  });
+});
+
+describe("readNote returns parsed frontmatter", () => {
+  beforeEach(reset);
+
+  it("includes the parsed frontmatter object alongside the raw content", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: x\nstatus: done\ntags: [a, b]\n---\nHello body\n");
+    const res = await readNote(c, cfg, { path: "n.md" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // Raw content unchanged (block[0] contract).
+    expect(res.value.content).toBe("---\nid: x\nstatus: done\ntags: [a, b]\n---\nHello body\n");
+    expect(res.value.frontmatter).toEqual({ id: "x", status: "done", tags: ["a", "b"] });
+  });
+
+  it("returns an empty frontmatter object for a note without frontmatter", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "Just a body\n");
+    const res = await readNote(c, cfg, { path: "n.md" });
+    expect(res.ok && res.value.frontmatter).toEqual({});
+  });
+
+  it("does not throw on malformed YAML frontmatter — body still readable, frontmatter {}", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    // Unterminated double-quote: invalid YAML that js-yaml/gray-matter rejects.
+    await c.put("n.md", '---\nk: "unterminated\n---\nThe body\n');
+    const res = await readNote(c, cfg, { path: "n.md" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.content).toBe('---\nk: "unterminated\n---\nThe body\n');
+    expect(res.value.frontmatter).toEqual({});
+  });
+});
+
+describe("note-write tools return the resulting id", () => {
+  beforeEach(reset);
+
+  it("createNote returns the minted id (no id supplied)", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const res = await createNote(c, cfg, { path: "n.md", content: "Body\n" });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.id).toMatch(NANOID_RE);
+    expect(extractIdFromFrontmatter(res.value.content)).toBe(res.value.id);
+  });
+
+  it("createNote returns a caller-supplied id verbatim", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const res = await createNote(c, cfg, {
+      path: "n.md",
+      content: "---\nid: custom-123\n---\nBody\n",
+    });
+    expect(res.ok && res.value.id).toBe("custom-123");
+  });
+
+  it("replaceNote returns the preserved id", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: keep\n---\nOld\n");
+    const res = await replaceNote(c, cfg, { path: "n.md", content: "New body\n" });
+    expect(res.ok && res.value.id).toBe("keep");
+  });
+
+  it("replaceBody returns the existing id", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: keep\n---\nOld\n");
+    const res = await replaceBody(c, cfg, { path: "n.md", body: "New\n" });
+    expect(res.ok && res.value.id).toBe("keep");
+  });
+
+  it("patchNote returns the note's id", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: keep\n---\nhello world\n");
+    const res = await patchNote(c, cfg, { path: "n.md", old_str: "world", new_str: "there" });
+    expect(res.ok && res.value.id).toBe("keep");
+  });
+});
+
+describe("patchFrontmatter", () => {
+  beforeEach(reset);
+
+  it("sets a new field and overwrites an existing one, preserving the id", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: keepme\nstatus: draft\n---\nBody\n");
+    const res = await patchFrontmatter(c, cfg, {
+      path: "n.md",
+      set: { status: "done", priority: 2 },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.id).toBe("keepme");
+    expect(res.value.changed_keys).toEqual(["status", "priority"]);
+    const body = await c.get("n.md");
+    expect(body).toBe("---\nid: keepme\nstatus: done\npriority: 2\n---\nBody\n");
+  });
+
+  it("unsets a field", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: x\nstatus: done\n---\nBody\n");
+    const res = await patchFrontmatter(c, cfg, { path: "n.md", unset: ["status"] });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.removed_keys).toEqual(["status"]);
+    expect(await c.get("n.md")).toBe("---\nid: x\n---\nBody\n");
+  });
+
+  it("mints an id when the note has none and reports it", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "Just a body\n");
+    const res = await patchFrontmatter(c, cfg, { path: "n.md", set: { status: "new" } });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.id).toMatch(NANOID_RE);
+    const body = await c.get("n.md");
+    expect(body).toContain("status: new");
+    expect(extractIdFromFrontmatter(body ?? "")).toBe(res.value.id);
+  });
+
+  it("refuses to set or unset the id field", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: x\n---\nB\n");
+    const setRes = await patchFrontmatter(c, cfg, { path: "n.md", set: { id: "evil" } });
+    expect(setRes.ok).toBe(false);
+    if (!setRes.ok) expect(setRes.reason).toBe("id_immutable");
+    const unsetRes = await patchFrontmatter(c, cfg, { path: "n.md", unset: ["id"] });
+    expect(unsetRes.ok).toBe(false);
+    if (!unsetRes.ok) expect(unsetRes.reason).toBe("id_immutable");
+    // Note untouched.
+    expect(await c.get("n.md")).toBe("---\nid: x\n---\nB\n");
+  });
+
+  it("refuses a block-style value without modifying the note", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const original = "---\nid: x\ntags:\n  - a\n  - b\n---\nB\n";
+    await c.put("n.md", original);
+    const res = await patchFrontmatter(c, cfg, { path: "n.md", set: { tags: ["c"] } });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toBe("unsupported_block_value");
+      expect(res.key).toBe("tags");
+    }
+    expect(await c.get("n.md")).toBe(original);
+  });
+
+  it("returns malformed_frontmatter (not a throw) when the note's frontmatter is unterminated", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    await c.put("n.md", "---\nid: x\nstatus: a\nBody with no closing fence\n");
+    const res = await patchFrontmatter(c, cfg, { path: "n.md", set: { status: "b" } });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("malformed_frontmatter");
+  });
+
+  it("returns not_found for a missing note and no_op for an empty patch", async () => {
+    const c = new R2Client(env.VAULT, cfg);
+    const missing = await patchFrontmatter(c, cfg, { path: "nope.md", set: { a: 1 } });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.reason).toBe("not_found");
+    await c.put("n.md", "---\nid: x\n---\nB\n");
+    const empty = await patchFrontmatter(c, cfg, { path: "n.md" });
+    expect(empty.ok).toBe(false);
+    if (!empty.ok) expect(empty.reason).toBe("no_op");
   });
 });
 

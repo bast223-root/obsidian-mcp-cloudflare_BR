@@ -38,7 +38,14 @@ export function parsePositiveInt(v: unknown, fallback: number): number {
 export function buildVaultConfig(env: Env): VaultConfig {
   return {
     prefix: env.VAULT_PREFIX,
-    dailyNotePathTemplate: env.DAILY_NOTE_PATH_TEMPLATE,
+    periodicNoteTemplates: {
+      // Empty / unset ⇒ null ⇒ that cadence's tools return period_not_configured.
+      daily: env.DAILY_NOTE_PATH_TEMPLATE || null,
+      weekly: env.WEEKLY_NOTE_PATH_TEMPLATE || null,
+      monthly: env.MONTHLY_NOTE_PATH_TEMPLATE || null,
+      quarterly: env.QUARTERLY_NOTE_PATH_TEMPLATE || null,
+      yearly: env.YEARLY_NOTE_PATH_TEMPLATE || null,
+    },
     permalinkBaseUrl: env.PERMALINK_BASE_URL ?? "",
     attachmentsPathMode: parsePathMode(env.ATTACHMENTS_PATH_MODE),
     attachmentsSubfolder: env.ATTACHMENTS_SUBFOLDER || "files",
