@@ -17,12 +17,13 @@
     "deploy:fresh": "npm run setup && npx wrangler deploy",
     "types": "wrangler types",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.5.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "agents": "^0.12.3",
+    "agents": "0.12.3",
     "gray-matter": "^4.0.3",
     "nanoid": "^5.1.11",
     "zod": "^4.4.3"
@@ -31,6 +32,7 @@
     "@cloudflare/vitest-pool-workers": "^0.16.3",
     "@types/node": "^25.8.0",
     "buffer": "^6.0.3",
+    "patch-package": "^8.0.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6",
     "wrangler": "^4.95.0"

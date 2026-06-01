@@ -1,0 +1,14 @@
+diff --git a/node_modules/agents/dist/mcp/index.js b/node_modules/agents/dist/mcp/index.js
+index 69ae79b..be73c4b 100644
+--- a/node_modules/agents/dist/mcp/index.js
++++ b/node_modules/agents/dist/mcp/index.js
+@@ -674,7 +674,8 @@ var StreamableHTTPServerTransport = class {
+ 			this.writeSSEEvent(standaloneConnection, message, eventId);
+ 			return;
+ 		}
+-		const connection = Array.from(agent.getConnections()).find((conn) => conn.state?.requestIds?.includes(requestId));
++		const __cf_originatingConn = getCurrentAgent().connection;
++		const connection = __cf_originatingConn && __cf_originatingConn.state?.requestIds?.includes(requestId) ? __cf_originatingConn : Array.from(agent.getConnections()).find((conn) => conn.state?.requestIds?.includes(requestId));
+ 		if (!connection) throw new Error(`No connection established for request ID: ${String(requestId)}`);
+ 		let eventId;
+ 		if (this._eventStore) eventId = await this._eventStore.storeEvent(connection.id, message);
