@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-06-01
+
 ### Fixed
 
-- **Vendored patch for the `agents` SDK cross-conversation response bleed (`cloudflare/agents#1632`).** `patch-package` patch (`patches/agents+0.12.3.patch`, `"postinstall": "patch-package"`, `agents` pinned to `0.12.3`) making `StreamableHTTPServerTransport.send()` route result/error responses to the **originating connection** (from `getCurrentAgent().connection`, distinct per concurrent request via the agent ALS scope) instead of the first connection matching the response's request id — falling back to the original scan when the ALS connection isn't the owner (so never worse than upstream). Eliminates the wrong-note response delivery seen when a client multiplexes conversations onto one `mcp-session-id` with colliding request ids (Claude Desktop/iOS). Temporary until upstream lands the fix — see the PR draft and remove then (bump `agents`, delete the patch + postinstall). Compiled-into-bundle and no-regression verified; behavioral stress-test pending.
+- **Vendored patch for the `agents` SDK cross-conversation response bleed (`cloudflare/agents#1632`).** `patch-package` patch (`patches/agents+0.12.3.patch`, `"postinstall": "patch-package"`, `agents` pinned to `0.12.3`) making `StreamableHTTPServerTransport.send()` route result/error responses to the **originating connection** (from `getCurrentAgent().connection`, distinct per concurrent request via the agent ALS scope) instead of the first connection matching the response's request id — falling back to the original scan when the ALS connection isn't the owner (so never worse than upstream). Eliminates the wrong-note response delivery seen when a client multiplexes conversations onto one `mcp-session-id` with colliding request ids (Claude Desktop/iOS). Temporary until upstream lands the fix — see the PR draft and remove then (bump `agents`, delete the patch + postinstall). Compiled-into-bundle and no-regression verified, and behavioral stress-test **PASSED**: 3 concurrent Claude Desktop lanes multiplexed onto one session, ~72 concurrent writes to two shared notes amid a continuous stream of same-session `id:1` collisions, **zero cross of any kind** (and the `if_match` guard caught all write contention cleanly).
 
 ## [0.15.0] - 2026-05-31
 
@@ -313,7 +315,8 @@ Initial release.
 - End-to-end deployment verified: Obsidian (Mac) ↔ Remotely Save ↔ R2 ↔ Worker ↔ Claude.ai. Note creation through Claude.ai was confirmed and the new note synced back to Obsidian on the next Remotely Save interval.
 - Documented gotchas encountered during build: `vitest-pool-workers` + space-in-path, `custom_domain` clashes with pre-existing DNS records, 30-minute negative DNS cache after record deletion.
 
-[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/dszp/obsidian-mcp-cloudflare/compare/v0.12.2...v0.13.0
