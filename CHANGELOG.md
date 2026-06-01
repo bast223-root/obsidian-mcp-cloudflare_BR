@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Vendored patch for the `agents` SDK cross-conversation response bleed (`cloudflare/agents#1632`).** `patch-package` patch (`patches/agents+0.12.3.patch`, `"postinstall": "patch-package"`, `agents` pinned to `0.12.3`) making `StreamableHTTPServerTransport.send()` route result/error responses to the **originating connection** (from `getCurrentAgent().connection`, distinct per concurrent request via the agent ALS scope) instead of the first connection matching the response's request id — falling back to the original scan when the ALS connection isn't the owner (so never worse than upstream). Eliminates the wrong-note response delivery seen when a client multiplexes conversations onto one `mcp-session-id` with colliding request ids (Claude Desktop/iOS). Temporary until upstream lands the fix — see the PR draft and remove then (bump `agents`, delete the patch + postinstall). Compiled-into-bundle and no-regression verified; behavioral stress-test pending.
+
 ## [0.15.0] - 2026-05-31
 
 ### Added
