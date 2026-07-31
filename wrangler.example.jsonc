@@ -8,9 +8,13 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-05-01",
   "compatibility_flags": ["nodejs_compat"],
-  "routes": [
-    { "pattern": "${MCP_HOSTNAME}", "custom_domain": true }
-  ],
+  // routes block removed — deploying to *.workers.dev (MCP_HOSTNAME left empty).
+  // Serve on the *.workers.dev subdomain, but disable the per-version Preview
+  // URLs: this Worker exposes the whole vault behind OAuth, so we don't want
+  // extra public per-deployment hostnames. Set workers_dev:false only if you
+  // later move to a custom domain.
+  "workers_dev": true,
+  "preview_urls": false,
   "kv_namespaces": [
     { "binding": "OAUTH_KV", "id": "${OAUTH_KV_ID}" }
   ],

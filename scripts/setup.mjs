@@ -10,6 +10,7 @@ import { readFileSync, writeFileSync, existsSync, appendFileSync } from "node:fs
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SCRIPT_DIR, "..");
@@ -17,7 +18,15 @@ const ENV_PATH = join(ROOT, ".env");
 const TEMPLATE_PATH = join(ROOT, "wrangler.example.jsonc");
 const OUT_PATH = join(ROOT, "wrangler.jsonc");
 
-const REQUIRED = ["CLOUDFLARE_ACCOUNT_ID", "MCP_HOSTNAME", "R2_BUCKET_NAME"];
+// MCP_HOSTNAME is optional: empty ⇒ deploy to *.workers.dev (the `routes` block
+// is removed from wrangler.example.jsonc for that case). It's only required when
+// serving from a custom domain. See DEPLOYMENT.md "First-time deployment".
+const REQUIRED = ["CLOUDFLARE_ACCOUNT_ID", "R2_BUCKET_NAME"];
+
+// Resolve wrangler's JS entrypoint so we can run it with the current node
+// binary instead of the `npx`/`npx.cmd` shim (see runWrangler).
+const require = createRequire(import.meta.url);
+const WRANGLER_BIN = require.resolve("wrangler/bin/wrangler.js");
 
 function parseEnv(text) {
   const out = {};
@@ -48,7 +57,12 @@ function maskId(id) {
 }
 
 function runWrangler(args) {
-  return execFileSync("npx", ["wrangler", ...args], {
+  // Invoke wrangler's JS entrypoint directly with the current node binary.
+  // Using `npx`/`npx.cmd` here breaks on Windows: Node refuses to execFile a
+  // .cmd shim without a shell, and enabling the shell would reintroduce the
+  // command-injection surface this script deliberately avoids. Running the
+  // resolved .js with process.execPath is cross-platform and stays shell-free.
+  return execFileSync(process.execPath, [WRANGLER_BIN, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
